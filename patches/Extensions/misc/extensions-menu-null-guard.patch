@@ -1,0 +1,24 @@
+author: bearinmindcat <bearincrypto@gmail.com>
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -4657,7 +4657,17 @@
+         } else if (id == R.id.extensions_menu_menu_id) {
+             ExtensionsToolbarCoordinator coordinator =
+                     getToolbarManager().getExtensionsToolbarCoordinator();
+-            coordinator.showExtensionsMenu();
++            if (coordinator != null) {
++                coordinator.showExtensionsMenu();
++            } else {
++                getTabCreator(/* incognito= */ false)
++                        .createNewTab(
++                                new LoadUrlParams(
++                                        UrlConstants.CHROME_EXTENSIONS_URL,
++                                        PageTransition.AUTO_TOPLEVEL),
++                                TabLaunchType.FROM_CHROME_UI,
++                                getCurrentTabModel().isIncognito() ? null : currentTab);
++            }
+             RecordUserAction.record("MobileMenuExtensionsMenu");
+         } else if (id == R.id.manage_extensions_menu_id) {
+             if (getCurrentTabModel().isIncognito()) {
