@@ -25,7 +25,7 @@ jobs:
         shell: bash
         env:
           UGC_WORK: /mnt/ugc
-        run: .github/scripts/hosted-prepare.sh
+        run: bash .github/scripts/hosted-prepare.sh
       - name: Fetch, patch and configure
         shell: bash
         env:
@@ -36,14 +36,14 @@ jobs:
           GOOGLE_DEFAULT_CLIENT_SECRET: ${{ secrets.GOOGLE_DEFAULT_CLIENT_SECRET }}
           CHROMIUM_SOURCE: ${{ inputs.chromium_source == 'github' && 'https://github.com/chromium/chromium.git' || 'https://chromium.googlesource.com/chromium/src.git' }}
         run: >
-          .github/scripts/hosted-build.sh --install-deps --prepare-only
+          bash .github/scripts/hosted-build.sh --install-deps --prepare-only
           --arch "${{ inputs.architecture }}"
           --target chrome_modern_target
       - name: Pack build tree
         shell: bash
         env:
           UGC_WORK: /mnt/ugc
-        run: .github/scripts/hosted-export.sh
+        run: bash .github/scripts/hosted-export.sh
       - name: Save build tree
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

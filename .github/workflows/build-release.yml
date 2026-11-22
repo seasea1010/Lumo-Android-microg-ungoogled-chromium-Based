@@ -65,10 +65,10 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
           CHROMIUM_SOURCE: ${{ inputs.chromium_source == 'github' && 'https://github.com/chromium/chromium.git' || 'https://chromium.googlesource.com/chromium/src.git' }}
-        run: ./build.sh ${{ inputs.resume == 'yes' && '--resume' || '' }} --arch "${{ inputs.architecture }}" --target chrome_modern_target
+        run: bash ./build.sh ${{ inputs.resume == 'yes' && '--resume' || '' }} --arch "${{ inputs.architecture }}" --target chrome_modern_target
 
       - name: Sign and assemble
-        run: build/release.sh "${{ inputs.architecture }}"
+        run: bash build/release.sh "${{ inputs.architecture }}"
 
       - name: Attest build provenance
         if: ${{ inputs.resume == 'no' }}
