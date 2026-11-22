@@ -385,6 +385,13 @@ echo "icons: applied"
   fi
   
 if [ -n "${GOOGLE_DEFAULT_CLIENT_ID:-}" ] && [ -n "${GOOGLE_DEFAULT_CLIENT_SECRET:-}" ]; then
+  # Secrets pasted into CI often carry a trailing newline, which
+  # would break the generated args.gn ("Newline in string
+  # constant"); these values never contain whitespace, so strip
+  # all of it defensively.
+  GOOGLE_DEFAULT_CLIENT_ID="$(printf '%s' "$GOOGLE_DEFAULT_CLIENT_ID" | tr -d '[:space:]')"
+  GOOGLE_DEFAULT_CLIENT_SECRET="$(printf '%s' "$GOOGLE_DEFAULT_CLIENT_SECRET" | tr -d '[:space:]')"
+  GOOGLE_API_KEY="$(printf '%s' "${GOOGLE_API_KEY:-}" | tr -d '[:space:]')"
   printf '\ngoogle_default_client_id = "%s"\n'     "$GOOGLE_DEFAULT_CLIENT_ID"     >> "${output_folder}"/args.gn
   printf 'google_default_client_secret = "%s"\n'    "$GOOGLE_DEFAULT_CLIENT_SECRET" >> "${output_folder}"/args.gn
   [ -n "${GOOGLE_API_KEY:-}" ] && printf 'google_api_key = "%s"\n' "$GOOGLE_API_KEY" >> "${output_folder}"/args.gn
