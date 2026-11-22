@@ -1,0 +1,11 @@
+blink_symbol_level=1
+dcheck_always_on=false
+enable_iterator_debugging=false
+fatal_linker_warnings=false
+is_component_build=false
+is_debug=false
+is_official_build=true
+symbol_level=1
+
+libyuv_use_sme = false
+libyuv_use_sve = false
