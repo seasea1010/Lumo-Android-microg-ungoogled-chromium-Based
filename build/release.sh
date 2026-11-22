@@ -33,12 +33,12 @@ if [ -z "$APK_IN" ] && [ -n "$AAB_IN" ]; then
 fi
 [ -n "$APK_IN" ] || { echo "FATAL: no ChromePublic.apk and no bundle to derive one from"; exit 1; }
 
-if [ -x microg/apply_microg_smali_patch.sh ]; then
+if [ -f microg/apply_microg_smali_patch.sh ]; then
     for _mg_in in "$APK_IN" "$AAB_IN"; do
         [ -n "$_mg_in" ] && [ -f "$_mg_in" ] || continue
         echo "microG: applying smali redirect to $_mg_in"
         _mg_out="${_mg_in}.microg"
-        if microg/apply_microg_smali_patch.sh "$_mg_in" "$_mg_out" --no-sign; then
+        if bash microg/apply_microg_smali_patch.sh "$_mg_in" "$_mg_out" --no-sign; then
             mv -f "$_mg_out" "$_mg_in"
             echo "microG: smali redirect applied to $(basename "$_mg_in")"
         else

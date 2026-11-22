@@ -8,7 +8,7 @@ export CCACHE_DIR=/mnt/ccache
 cd "${UGC_WORK}"
 
 : > build-step.log
-setsid ./build.sh "$@" < /dev/null >> build-step.log 2>&1 &
+setsid bash ./build.sh "$@" < /dev/null >> build-step.log 2>&1 &
 _pid=$!
 tail --pid="$_pid" -n +1 -f build-step.log &
 _tail=$!

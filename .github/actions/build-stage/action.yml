@@ -31,7 +31,7 @@ runs:
       shell: bash
       env:
         UGC_WORK: /mnt/ugc
-      run: .github/scripts/hosted-prepare.sh
+      run: bash .github/scripts/hosted-prepare.sh
 
     - name: Restore build tree
       shell: bash
@@ -40,7 +40,7 @@ runs:
         ARCH: ${{ inputs.architecture }}
         SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         GH_TOKEN: ${{ github.token }}
-      run: .github/scripts/hosted-import.sh
+      run: bash .github/scripts/hosted-import.sh
 
     - name: Build
       id: build
@@ -55,7 +55,7 @@ runs:
         GOOGLE_DEFAULT_CLIENT_SECRET: ${{ inputs.google_default_client_secret }}
         CHROMIUM_SOURCE: ${{ inputs.chromium_source == 'github' && 'https://github.com/chromium/chromium.git' || 'https://chromium.googlesource.com/chromium/src.git' }}
       run: >
-        .github/scripts/hosted-build.sh --install-deps --resume
+        bash .github/scripts/hosted-build.sh --install-deps --resume
         --arch "${{ inputs.architecture }}"
         --target chrome_modern_target
 
@@ -64,7 +64,7 @@ runs:
       shell: bash
       env:
         UGC_WORK: /mnt/ugc
-      run: .github/scripts/hosted-export.sh
+      run: bash .github/scripts/hosted-export.sh
 
     - name: Save build tree
       if: steps.build.outputs.status == 'running'
@@ -98,7 +98,7 @@ runs:
       shell: bash
       run: |
         cd /mnt/ugc
-        build/release.sh "${{ inputs.architecture }}"
+        bash build/release.sh "${{ inputs.architecture }}"
         . ./.build_config
         echo "UGC_VERSION=${chromium_version}-${ungoogled_chromium_android_revision}" >> "$GITHUB_ENV"
 

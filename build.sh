@@ -452,7 +452,7 @@ if [[ "$TARGET" != "all" ]]; then
   fi
   if [[ "$TARGET" == "trichrome_chrome_bundle_target" ]] || [[ "$TARGET" == "chrome_modern_target" ]] || [[ "$TARGET" == "trichrome_chrome_apk_target" ]] || [[ "$TARGET" == "trichrome_webview_target" ]]; then
     if [ -f "$uc_keystore" ]; then
-      ../bundle_generate_apk.sh -o "${output_folder}" -a "${ARCH}" -t "${TARGET_EXPANDED}"
+      bash ../bundle_generate_apk.sh -o "${output_folder}" -a "${ARCH}" -t "${TARGET_EXPANDED}"
     fi
   fi
   if [[ "$TARGET" != "webview_target" ]]; then
@@ -465,7 +465,7 @@ if [[ "$TARGET" != "all" ]]; then
 else
   ninja_build "out/Default" "$chrome_modern_target"
   if [ -f "$uc_keystore" ]; then
-    ../bundle_generate_apk.sh -o "${output_folder}" -a "${ARCH}" -t "$chrome_modern_target"
+    bash ../bundle_generate_apk.sh -o "${output_folder}" -a "${ARCH}" -t "$chrome_modern_target"
   fi
   ninja_build "out/Default" "$webview_target"
   ninja_build "out/Default" "$trichrome_webview_target"
