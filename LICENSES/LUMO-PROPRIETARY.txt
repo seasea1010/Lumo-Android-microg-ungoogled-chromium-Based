@@ -1,0 +1,9 @@
+Lumo 独自部分（lumo/ ディレクトリ配下、および Lumo の名前・アイコン等のブランド要素）は
+プロプライエタリであり、All Rights Reserved とする（デスクトップ版 Lumo と同じ方針）。
+
+それ以外の部分のライセンス：
+- 土台（microg-ungoogled-chromium）および Bromite / Cromite 由来部分: GPL-3.0（LICENSE.md / LICENSES/GPL-3.0.txt）
+- ungoogled-chromium / Chromium 由来部分: BSD 3-Clause（LICENSES/BSD-3-Clause-ungoogled.txt）
+
+本プロジェクトはオーナーの個人利用を目的とし、第三者への配布は想定していない。
+将来公開配布する場合は、GPL 部分についてソース公開等の義務が発生する点に注意すること。
