@@ -90,11 +90,13 @@ if [ -n "$KS" ] && [ -f "$KS" ] && [ -n "$KS_PASSFILE" ] && [ -f "$KS_PASSFILE" 
         echo "WARN: no ChromePublic.aab in $OUT/apks (bundle target not built?)"
     fi
 else
-    echo "WARN: no keystore supplied, copying build output as-is."
+    echo "FATAL: no keystore supplied; refusing to assemble an unsigned release."
     echo "      UGC_KEYSTORE:          ${KS:-<unset>}$([ -n "$KS" ] && { [ -f "$KS" ] && echo '' || echo '  (file not found)'; })"
     echo "      UGC_KEYSTORE_PASSFILE: ${KS_PASSFILE:-<unset>}$([ -n "$KS_PASSFILE" ] && { [ -f "$KS_PASSFILE" ] && echo '' || echo '  (file not found)'; })"
-    cp "$APK_IN" "$REL/ChromePublic_${ARCH}.apk"
-    [ -n "$AAB_IN" ] && cp "$AAB_IN" "$REL/ChromePublic_${ARCH}.aab"
+    echo "      Register the KEYSTORE_B64 / KEYSTORE_PASS repository secrets so the"
+    echo "      workflow stages a keystore, or set UGC_KEYSTORE and"
+    echo "      UGC_KEYSTORE_PASSFILE for a local release build."
+    exit 1
 fi
 
 MAP=$(find "$OUT" -maxdepth 2 \( -name "ChromePublic.apk.mapping" -o -name "ChromePublic.aab.mapping" \) | head -1)
