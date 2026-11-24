@@ -13,7 +13,7 @@ author: Wengling Chen <feiyu2817@gmail.com>
    # (chrome_public_apk, trichrome_chrome_bundle, etc. as well as the
    # *_bundle variants). This defaults to the Chromium browser package name.
 -  chrome_public_manifest_package = "org.chromium.chrome"
-+  chrome_public_manifest_package = "org.ungoogled.chromium"
++  chrome_public_manifest_package = "com.seasea1019.lumo"
    if (use_stable_package_name_for_trichrome) {
      chrome_public_manifest_package += ".stable"
    } else if (android_channel != "default") {
@@ -22,7 +22,7 @@ author: Wengling Chen <feiyu2817@gmail.com>
  }
  
 -chrome_public_test_manifest_package = "org.chromium.chrome.tests"
-+chrome_public_test_manifest_package = "org.ungoogled.chromium.tests"
++chrome_public_test_manifest_package = "com.seasea1019.lumo.tests"
  
  default_chrome_public_jinja_variables = [
    "channel=$android_channel",
@@ -33,7 +33,7 @@ author: Wengling Chen <feiyu2817@gmail.com>
  <resources xmlns:android="http://schemas.android.com/apk/res/android">
      <!-- The application name displayed to the user. -->
 -    <string name="app_name" translatable="false">Chromium</string>
-+    <string name="app_name" translatable="false">Ungoogled Chromium</string>
++    <string name="app_name" translatable="false">Lumo</string>
      <string name="bookmark_widget_title" translatable="false">Chromium bookmarks</string>
      <string name="search_widget_title" translatable="false">Chromium search</string>
      <string name="quick_action_search_widget_title" translatable="false">Chromium quick action search</string>
