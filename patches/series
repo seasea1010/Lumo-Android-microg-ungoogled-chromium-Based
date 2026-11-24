@@ -51,9 +51,9 @@ Vanadium/0080-disable-background-sync-by-default.patch
 Vanadium/0089-disable-autofill-server-communication-by-default.patch
 #Unobtainium/kill-Auth.patch
 #Unobtainium/kill-GCM.patch
-Unobtainium/kill-Location-fall-back-to-system.patch
-Unobtainium/kill-Vision.patch
-Unobtainium/kill-Translate.patch
+#Unobtainium/kill-Location-fall-back-to-system.patch
+#Unobtainium/kill-Vision.patch
+#Unobtainium/kill-Translate.patch
 Unobtainium/kill-TOS-and-metrics-opt-out.patch
 ungoogled-chromium-android/Change-package-name-chromium.patch
 #ungoogled-chromium-android/Remove-dependency-on-com.google.android.gms.gcm.patch
@@ -67,7 +67,7 @@ ungoogled-chromium-android/Change-package-name-chromium.patch
 ungoogled-chromium-android/Remove-dependency-on-com.google.android.play.patch
 ungoogled-chromium-android/Remove-dependency-on-com.google.android.play.core.splitcompat-com.google.android.play.core.splitinstall.patch
 #src-fix/fix-gms-consumer-stubs.patch
-ungoogled-chromium-android/Disable-contextual-search.patch
+#ungoogled-chromium-android/Disable-contextual-search.patch
 #ungoogled-chromium-android/Add-more-search-engines.patch
 #ungoogled-chromium-android/Add-folder-button-bookmark.patch
 #ungoogled-chromium-android/Enable-update-notification.patch

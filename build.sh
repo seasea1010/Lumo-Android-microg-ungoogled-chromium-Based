@@ -271,12 +271,12 @@ for _p in disable-gaia.patch disable-gcm.patch disable-webstore-urls.patch 0005-
 done
 python3 ungoogled-chromium/utils/patches.py apply src ungoogled-chromium/patches
 
-_mg_desub='^(\./)?(google_apis/gaia/|google_apis/google_api_keys\.|components/signin/|components/sync/|extensions/common/extension_urls\.|chrome/app/extensions_strings\.grdp|extensions/strings/extensions_strings\.grd|extensions/browser/updater/|chrome/browser/extensions/updater/|components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/UrlConstants\.java|chrome/common/extensions/api/_api_features\.json|extensions/common/api/_api_features\.json)'
+_mg_desub='^(\./)?(google_apis/gaia/|google_apis/google_api_keys\.|components/signin/|components/sync/|components/translate/|chrome/browser/translate/|extensions/common/extension_urls\.|chrome/app/extensions_strings\.grdp|extensions/strings/extensions_strings\.grd|extensions/browser/updater/|chrome/browser/extensions/updater/|components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/UrlConstants\.java|chrome/common/extensions/api/_api_features\.json|extensions/common/api/_api_features\.json)'
 for _sl in ungoogled-chromium/domain_substitution.list "${substitution_list_2:-domain_sub_2.list}"; do
   [ -f "$_sl" ] || continue
   _n0=$(wc -l < "$_sl")
   sed -i -E "\%${_mg_desub}%d" "$_sl"
-  echo "microG: kept $(( _n0 - $(wc -l < "$_sl") )) auth/sync files out of domain substitution ($_sl)"
+  echo "microG: kept $(( _n0 - $(wc -l < "$_sl") )) auth/sync/translate files out of domain substitution ($_sl)"
 done
   python3 ungoogled-chromium/utils/domain_substitution.py apply -r ungoogled-chromium/domain_regex.list -f ungoogled-chromium/domain_substitution.list -c ${cache_file} src
 
@@ -364,6 +364,9 @@ grep -q 'CHROME_WEBSTORE_URL = "https://chromewebstore.google.com/"' \
   src/components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/UrlConstants.java \
   || { echo "FATAL: Java-side webstore URL still domain-substituted (domain_sub_2.list not filtered?)"; exit 1; }
 echo "extensions: layer verified"
+grep -rq "translate.googleapis.com" src/components/translate src/chrome/browser/translate \
+  || { echo "FATAL: translate endpoint still domain-substituted"; exit 1; }
+echo "translate: layer verified"
 
 for _d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
   cp misc/app_icons/mipmap-${_d}/*.png "src/chrome/android/java/res_chromium_base/mipmap-${_d}/"
