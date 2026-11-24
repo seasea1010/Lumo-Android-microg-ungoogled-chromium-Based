@@ -263,7 +263,7 @@ if [ "$RESUME" != y ]; then
 
   # Ignore the pruning error
   python3 ungoogled-chromium/utils/prune_binaries.py src ungoogled-chromium/pruning.list --keep-contingent-paths || true
-for _p in disable-gaia.patch disable-gcm.patch disable-webstore-urls.patch 0005-disable-default-extensions.patch; do
+for _p in disable-gaia.patch disable-gcm.patch disable-webstore-urls.patch 0005-disable-default-extensions.patch replace-google-search-engine-with-nosearch.patch disable-google-host-detection.patch disable-profile-avatar-downloading.patch; do
   if grep -qE "^[^#].*${_p}$" ungoogled-chromium/patches/series; then
     sed -i "s|^\(.*${_p}\)$|#\1|" ungoogled-chromium/patches/series
     echo "microG: disabled core/${_p}"
@@ -367,6 +367,9 @@ echo "extensions: layer verified"
 grep -rq "translate.googleapis.com" src/components/translate src/chrome/browser/translate \
   || { echo "FATAL: translate endpoint still domain-substituted"; exit 1; }
 echo "translate: layer verified"
+grep -q '"name": "Google"' src/third_party/search_engines_data/resources/definitions/prepopulated_engines.json \
+  || { echo "FATAL: Google search engine still replaced by No Search"; exit 1; }
+echo "search engine: Google present"
 
 for _d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
   cp misc/app_icons/mipmap-${_d}/*.png "src/chrome/android/java/res_chromium_base/mipmap-${_d}/"
