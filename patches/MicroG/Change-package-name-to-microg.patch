@@ -2,8 +2,9 @@ subject: Set the Lumo package name
 
 Force the final manifest package to com.seasea1019.lumo, overriding the
 channel suffixes (.stable etc.) appended earlier in declare_args().
-microG grants signature spoofing per package, so after the rename it must
-be re-enabled for com.seasea1019.lumo in microG settings.
+Note: on ROM-based microG setups, signature spoofing is granted per
+package and would need re-enabling after a rename; the Morphe MicroG RE
+setup used for Lumo needs no such step.
 ---
 --- a/chrome/android/chrome_public_apk_tmpl.gni
 +++ b/chrome/android/chrome_public_apk_tmpl.gni

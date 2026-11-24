@@ -21,6 +21,7 @@
   - `patches/ungoogled-chromium-android/Change-package-name-chromium.patch` で base を設定し、
     `patches/MicroG/Change-package-name-to-microg.patch` で最終値を上書きして確定する
     （`.stable` 等のサフィックスを打ち消す）。
-  - パッケージ名が変わるため、microG 設定で新パッケージへの署名偽装を有効にし直す必要がある。
-    旧パッケージとは別アプリ扱いになり、上書き更新はできない（入れ直し）。
+  - パッケージ名が変わるため、旧パッケージとは別アプリ扱いになり、上書き更新はできない（入れ直し）。
+    なお microG の署名偽装の許可はカスタム ROM 系 microG での話で、Morphe MicroG RE 環境では
+    旧パッケージでも操作なしで Sync が動いており、追加操作は不要。
 - アプリ名：`Lumo`（同じく Change-package-name-chromium.patch の `app_name`）。
