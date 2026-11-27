@@ -14,11 +14,23 @@ an empty key list and therefore made password sync fail with a
 cryptographer error, and drops the SyncSettingsUtils change that
 suppressed the sync error in settings: with a working backend the error
 state can be reported honestly again.
+
+Note: the GMS client classes that also ship in the Play services basement
+jar (ApiMetadata, Status) are not duplicated here: the target depends on
+google_play_services_basement_java and uses the real classes. The broker
+handshake types (GetServiceRequest, IGmsCallbacks, IGmsServiceBroker)
+live in org.chromium.components.trusted_vault.gms instead of
+com.google.android.gms.common.internal for the same reason: the basement
+jar already ships them, R8 rejects the duplicate classes at dex time,
+and the real ones cannot be used (no public constructor or setters on
+GetServiceRequest, no Stub on IGmsCallbacks, no asInterface on the
+broker Stub). Only the Java package changed; the wire protocol
+(descriptors, transaction numbers, field numbers) is untouched.
 ---
 diff --git a/components/trusted_vault/android/BUILD.gn b/components/trusted_vault/android/BUILD.gn
 --- a/components/trusted_vault/android/BUILD.gn
 +++ b/components/trusted_vault/android/BUILD.gn
-@@ -8,6 +8,19 @@ import("//third_party/jni_zero/jni_zero.gni")
+@@ -8,7 +8,19 @@ import("//third_party/jni_zero/jni_zero.gni")
  android_library("java") {
    srcjar_deps = [ ":jni_headers" ]
    sources = [
@@ -26,18 +38,18 @@ diff --git a/components/trusted_vault/android/BUILD.gn b/components/trusted_vaul
 +    "java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalCallback.java",
 +    "java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalService.java",
 +    "java/src/com/google/android/gms/auth/folsom/internal/ISharedKeyCallback.java",
-+    "java/src/com/google/android/gms/common/api/ApiMetadata.java",
-+    "java/src/com/google/android/gms/common/api/Status.java",
 +    "java/src/com/google/android/gms/common/internal/ConnectionInfo.java",
-+    "java/src/com/google/android/gms/common/internal/GetServiceRequest.java",
-+    "java/src/com/google/android/gms/common/internal/IGmsCallbacks.java",
-+    "java/src/com/google/android/gms/common/internal/IGmsServiceBroker.java",
++    "java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java",
++    "java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java",
++    "java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java",
 +    "java/src/org/chromium/components/trusted_vault/FolsomClient.java",
 +    "java/src/org/chromium/components/trusted_vault/FolsomSafeParcel.java",
 +    "java/src/org/chromium/components/trusted_vault/MicroGTrustedVaultBackend.java",
      "java/src/org/chromium/components/trusted_vault/TrustedVaultClient.java",
    ]
    deps = [
++    "$google_play_services_package:google_play_services_basement_java",
+     "//base:base_java",
 diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/SharedKey.java b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/SharedKey.java
 new file mode 100644
 index 0000000000000..ca93806cadacc
@@ -506,221 +518,6 @@ index 0000000000000..3f21eb626a84e
 +        }
 +    }
 +}
-diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/common/api/ApiMetadata.java b/components/trusted_vault/android/java/src/com/google/android/gms/common/api/ApiMetadata.java
-new file mode 100644
-index 0000000000000..31e73d0a8c2e2
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/com/google/android/gms/common/api/ApiMetadata.java
-@@ -0,0 +1,88 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written from the SafeParcelable definition of the same name in microG
-+ * GmsCore (play-services-basement) so the trusted vault backend can call the
-+ * microG Folsom service without the Play services SDK. Field numbers and the
-+ * wire format are part of the protocol and must not change: 1 = compliance
-+ * options (parcelable, not modelled by this client and never sent), 2 = b2
-+ * (boolean). A present ApiMetadata is prefixed on the wire with
-+ * METADATA_PRESENT_MAGIC, matching microG's own creator.
-+ *
-+ * <p>The Folsom client always passes a null ApiMetadata (the service treats
-+ * null as its DEFAULT), so in practice instances of this class are neither
-+ * written nor read; it exists so the AIDL signatures have the correct type.
-+ */
-+
-+package com.google.android.gms.common.api;
-+
-+import android.os.Parcel;
-+import android.os.Parcelable;
-+
-+import org.chromium.components.trusted_vault.FolsomSafeParcel;
-+
-+public final class ApiMetadata implements Parcelable {
-+    private static final int METADATA_PRESENT_MAGIC = -204102970;
-+
-+    public static final ApiMetadata DEFAULT = new ApiMetadata(false);
-+
-+    private boolean mB2;
-+
-+    private ApiMetadata() {}
-+
-+    public ApiMetadata(boolean b2) {
-+        mB2 = b2;
-+    }
-+
-+    public boolean getB2() {
-+        return mB2;
-+    }
-+
-+    @Override
-+    public int describeContents() {
-+        return 0;
-+    }
-+
-+    @Override
-+    public void writeToParcel(Parcel dest, int flags) {
-+        dest.writeInt(METADATA_PRESENT_MAGIC);
-+        int start = FolsomSafeParcel.beginObject(dest);
-+        // Field 1 (compliance options) is always null for this client and is omitted.
-+        FolsomSafeParcel.writeBoolean(dest, 2, mB2);
-+        FolsomSafeParcel.finishObject(dest, start);
-+    }
-+
-+    public static final Creator<ApiMetadata> CREATOR =
-+            new Creator<ApiMetadata>() {
-+                @Override
-+                public ApiMetadata createFromParcel(Parcel source) {
-+                    ApiMetadata result = new ApiMetadata();
-+                    int position = source.dataPosition();
-+                    if (source.readInt() != METADATA_PRESENT_MAGIC) {
-+                        // No metadata present; mirror microG's "skip" behaviour.
-+                        source.setDataPosition(position);
-+                        return result;
-+                    }
-+                    int end = FolsomSafeParcel.readObjectEnd(source);
-+                    while (source.dataPosition() < end) {
-+                        int header = source.readInt();
-+                        switch (FolsomSafeParcel.getFieldId(header)) {
-+                            case 2:
-+                                result.mB2 = FolsomSafeParcel.readBoolean(source, header);
-+                                break;
-+                            default:
-+                                FolsomSafeParcel.skip(source, header);
-+                                break;
-+                        }
-+                    }
-+                    source.setDataPosition(end);
-+                    return result;
-+                }
-+
-+                @Override
-+                public ApiMetadata[] newArray(int size) {
-+                    return new ApiMetadata[size];
-+                }
-+            };
-+}
-diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/common/api/Status.java b/components/trusted_vault/android/java/src/com/google/android/gms/common/api/Status.java
-new file mode 100644
-index 0000000000000..4ef0c7bc6dee2
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/com/google/android/gms/common/api/Status.java
-@@ -0,0 +1,115 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written from the SafeParcelable definition of the same name in microG
-+ * GmsCore (play-services-basement) so the trusted vault backend can receive
-+ * results from the microG Folsom service without the Play services SDK.
-+ * Field numbers and the wire format are part of the protocol and must not
-+ * change: 1000 = version code (int), 1 = status code (int), 2 = status
-+ * message (String), 3 = resolution (PendingIntent).
-+ */
-+
-+package com.google.android.gms.common.api;
-+
-+import android.app.PendingIntent;
-+import android.os.Parcel;
-+import android.os.Parcelable;
-+
-+import org.chromium.components.trusted_vault.FolsomSafeParcel;
-+
-+/** Result of a Folsom service call. Mirrors the parts of the GMS Status API used by the client. */
-+public final class Status implements Parcelable {
-+    // Common status codes (subset of CommonStatusCodes).
-+    public static final int SUCCESS = 0;
-+    public static final int SIGN_IN_REQUIRED = 4;
-+    public static final int INTERNAL_ERROR = 8;
-+    public static final int DEVELOPER_ERROR = 10;
-+
-+    private int mStatusCode;
-+    private String mStatusMessage;
-+    private PendingIntent mResolution;
-+
-+    public Status() {
-+        mStatusCode = INTERNAL_ERROR;
-+    }
-+
-+    public Status(int statusCode, String statusMessage, PendingIntent resolution) {
-+        mStatusCode = statusCode;
-+        mStatusMessage = statusMessage;
-+        mResolution = resolution;
-+    }
-+
-+    public int getStatusCode() {
-+        return mStatusCode;
-+    }
-+
-+    public String getStatusMessage() {
-+        return mStatusMessage;
-+    }
-+
-+    public PendingIntent getResolution() {
-+        return mResolution;
-+    }
-+
-+    public boolean hasResolution() {
-+        return mResolution != null;
-+    }
-+
-+    /** Mirrors microG's Status.isSuccess(): codes <= 0 (SUCCESS, SUCCESS_CACHE) are success. */
-+    public boolean isSuccess() {
-+        return mStatusCode <= 0;
-+    }
-+
-+    @Override
-+    public int describeContents() {
-+        return 0;
-+    }
-+
-+    @Override
-+    public void writeToParcel(Parcel dest, int flags) {
-+        int start = FolsomSafeParcel.beginObject(dest);
-+        FolsomSafeParcel.writeInt(dest, 1000, 1);
-+        FolsomSafeParcel.writeInt(dest, 1, mStatusCode);
-+        FolsomSafeParcel.writeString(dest, 2, mStatusMessage, false);
-+        FolsomSafeParcel.writeParcelable(dest, 3, mResolution, flags, false);
-+        FolsomSafeParcel.finishObject(dest, start);
-+    }
-+
-+    public static final Creator<Status> CREATOR =
-+            new Creator<Status>() {
-+                @Override
-+                public Status createFromParcel(Parcel source) {
-+                    int end = FolsomSafeParcel.readObjectEnd(source);
-+                    Status result = new Status();
-+                    while (source.dataPosition() < end) {
-+                        int header = source.readInt();
-+                        switch (FolsomSafeParcel.getFieldId(header)) {
-+                            case 1:
-+                                result.mStatusCode =
-+                                        FolsomSafeParcel.readInt(source, header);
-+                                break;
-+                            case 2:
-+                                result.mStatusMessage =
-+                                        FolsomSafeParcel.readString(source, header);
-+                                break;
-+                            case 3:
-+                                result.mResolution =
-+                                        FolsomSafeParcel.readParcelable(
-+                                                source, header, PendingIntent.CREATOR);
-+                                break;
-+                            default:
-+                                FolsomSafeParcel.skip(source, header);
-+                                break;
-+                        }
-+                    }
-+                    source.setDataPosition(end);
-+                    return result;
-+                }
-+
-+                @Override
-+                public Status[] newArray(int size) {
-+                    return new Status[size];
-+                }
-+            };
-+}
 diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/ConnectionInfo.java b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/ConnectionInfo.java
 new file mode 100644
 index 0000000000000..5d476a2941d9e
@@ -800,12 +597,12 @@ index 0000000000000..5d476a2941d9e
 +                }
 +            };
 +}
-diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/GetServiceRequest.java b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/GetServiceRequest.java
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java
 new file mode 100644
-index 0000000000000..e5f488679841f
+index 0000000000000..65d772b4ebc75
 --- /dev/null
-+++ b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/GetServiceRequest.java
-@@ -0,0 +1,103 @@
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java
+@@ -0,0 +1,111 @@
 +/*
 + * SPDX-FileCopyrightText: 2025 microG Project Team
 + * SPDX-License-Identifier: Apache-2.0
@@ -821,9 +618,17 @@ index 0000000000000..e5f488679841f
 + * 15 = attribution tag (String). This client only sets the fields the Folsom
 + * handshake needs; the rest are written with their default values or omitted
 + * (absent reference fields read back as null on the service side).
++ *
++ * This class lives in org.chromium.components.trusted_vault.gms instead of
++ * com.google.android.gms.common.internal because the Play services basement
++ * jar already ships a GetServiceRequest under that name and R8 rejects the
++ * duplicate class at dex time. The real basement class cannot be used here:
++ * it has no public constructor and no public packageName/extras fields, so
++ * the handshake request cannot be built with it. Only the Java package
++ * changed; the wire format above is untouched.
 + */
 +
-+package com.google.android.gms.common.internal;
++package org.chromium.components.trusted_vault.gms;
 +
 +import android.os.Bundle;
 +import android.os.Parcel;
@@ -909,12 +714,12 @@ index 0000000000000..e5f488679841f
 +                }
 +            };
 +}
-diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/IGmsCallbacks.java b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/IGmsCallbacks.java
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java
 new file mode 100644
-index 0000000000000..bebb86a46bffd
+index 0000000000000..b65fa1cc9d582
 --- /dev/null
-+++ b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/IGmsCallbacks.java
-@@ -0,0 +1,188 @@
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java
+@@ -0,0 +1,199 @@
 +/*
 + * SPDX-FileCopyrightText: 2025 microG Project Team
 + * SPDX-License-Identifier: Apache-2.0
@@ -924,9 +729,18 @@ index 0000000000000..bebb86a46bffd
 + * the trusted vault backend can complete the GMS broker handshake with
 + * microG without the Play services SDK. The interface descriptor and
 + * transaction numbers are part of the protocol and must not change.
++ *
++ * This interface lives in org.chromium.components.trusted_vault.gms instead
++ * of com.google.android.gms.common.internal because the Play services
++ * basement jar already ships an IGmsCallbacks under that name and R8
++ * rejects the duplicate class at dex time. The real basement interface
++ * cannot be used here: it has no Stub and its methods are obfuscated
++ * (zzb/zzc), so the handshake callbacks cannot be implemented against it.
++ * Only the Java package changed; the descriptor string and transaction
++ * numbers above are untouched.
 + */
 +
-+package com.google.android.gms.common.internal;
++package org.chromium.components.trusted_vault.gms;
 +
 +import android.os.Binder;
 +import android.os.Bundle;
@@ -934,6 +748,8 @@ index 0000000000000..bebb86a46bffd
 +import android.os.IInterface;
 +import android.os.Parcel;
 +import android.os.RemoteException;
++
++import com.google.android.gms.common.internal.ConnectionInfo;
 +
 +public interface IGmsCallbacks extends IInterface {
 +    void onPostInitComplete(int statusCode, IBinder binder, Bundle params) throws RemoteException;
@@ -1103,12 +919,12 @@ index 0000000000000..bebb86a46bffd
 +        }
 +    }
 +}
-diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/IGmsServiceBroker.java b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/IGmsServiceBroker.java
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java
 new file mode 100644
-index 0000000000000..94b2cc75310c1
+index 0000000000000..6a4f6ef0b5ff9
 --- /dev/null
-+++ b/components/trusted_vault/android/java/src/com/google/android/gms/common/internal/IGmsServiceBroker.java
-@@ -0,0 +1,94 @@
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java
+@@ -0,0 +1,102 @@
 +/*
 + * SPDX-FileCopyrightText: 2025 microG Project Team
 + * SPDX-License-Identifier: Apache-2.0
@@ -1121,9 +937,17 @@ index 0000000000000..94b2cc75310c1
 + * not change. Only getService is declared: it is the single broker method
 + * this client uses. The server-side Stub is never implemented by this
 + * client (the broker lives in the microG process), so it is kept abstract.
++ *
++ * This interface lives in org.chromium.components.trusted_vault.gms instead
++ * of com.google.android.gms.common.internal because the Play services
++ * basement jar already ships an IGmsServiceBroker (and Stub) under that
++ * name and R8 rejects the duplicate class at dex time. The real basement
++ * Stub cannot be used here: it has no asInterface method, so the broker
++ * binder cannot be wrapped with it. Only the Java package changed; the
++ * descriptor string and transaction number above are untouched.
 + */
 +
-+package com.google.android.gms.common.internal;
++package org.chromium.components.trusted_vault.gms;
 +
 +import android.os.Binder;
 +import android.os.IBinder;
@@ -1205,10 +1029,10 @@ index 0000000000000..94b2cc75310c1
 +}
 diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomClient.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomClient.java
 new file mode 100644
-index 0000000000000..ec194d519084b
+index 0000000000000..39bd8606ffbed
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomClient.java
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,555 @@
 +// Copyright 2025 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1233,9 +1057,10 @@ index 0000000000000..ec194d519084b
 +import com.google.android.gms.auth.folsom.internal.ISharedKeyCallback;
 +import com.google.android.gms.common.api.Status;
 +import com.google.android.gms.common.internal.ConnectionInfo;
-+import com.google.android.gms.common.internal.GetServiceRequest;
-+import com.google.android.gms.common.internal.IGmsCallbacks;
-+import com.google.android.gms.common.internal.IGmsServiceBroker;
++
++import org.chromium.components.trusted_vault.gms.GetServiceRequest;
++import org.chromium.components.trusted_vault.gms.IGmsCallbacks;
++import org.chromium.components.trusted_vault.gms.IGmsServiceBroker;
 +
 +import org.chromium.base.ContextUtils;
 +import org.chromium.base.Promise;
