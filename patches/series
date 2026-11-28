@@ -20,7 +20,7 @@ src-fix/fix-safebrowsing-bridge-android-stub.patch
 #src-fix/fix-safebrowsing-prefs-lib-android.patch # Lumo: removed in ungoogled removal (build #10)
 src-fix/fix-safebrowsing-suspicious-notification-android.patch
 src-fix/fix-safebrowsing-suspicious-site-dialog-152.patch
-src-fix/fix-android-pref-enum-signin-safebrowsing.patch
+#src-fix/fix-android-pref-enum-signin-safebrowsing.patch
 #src-fix/fix-android-read-prefs-registration.patch # Lumo: removed in ungoogled removal (build #10)
 src-fix/fix-android-token-service-seed-before-load.patch
 src-fix/fix-android-safebrowsing-cpp-includes.patch
