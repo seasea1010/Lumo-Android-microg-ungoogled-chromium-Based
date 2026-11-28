@@ -1,10 +1,10 @@
 diff --git a/chrome/browser/resources/extensions/sidebar.html.ts b/chrome/browser/resources/extensions/sidebar.html.ts
 --- a/chrome/browser/resources/extensions/sidebar.html.ts
 +++ b/chrome/browser/resources/extensions/sidebar.html.ts
-@@ -33,6 +33,27 @@ export function getHtml(this: ExtensionsSidebarElement) {
-     <cr-ripple></cr-ripple>
-   </a>
- </cr-menu-selector>
+@@ -48,6 +48,27 @@ export function getHtml(this: ExtensionsSidebarElement) {
+    <cr-ripple></cr-ripple>
+  </a>
+</cr-menu-selector>
 +<div class="separator"></div>
 +<div class="cr-nav-menu-item" id="moreExtensions">
 +  <cr-icon id="web-store-icon" icon="extensions-icons:web_store">
@@ -26,6 +26,6 @@ diff --git a/chrome/browser/resources/extensions/sidebar.html.ts b/chrome/browse
 +  <a href="https://github.com/NeverDecaf/chromium-web-store/releases">NeverDecaf Web Store</a>
 +  <cr-ripple></cr-ripple>
 +</div>
- <!--_html_template_end_-->`;
-   // clang-format on
- }
+ <div class="separator" ?hidden="${!this.inDevMode}"></div>
+ ${this.inDevMode ? html`
+   <div class="cr-nav-menu-item" id="moreExtensions">
