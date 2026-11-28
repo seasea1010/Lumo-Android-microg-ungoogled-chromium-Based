@@ -271,12 +271,18 @@ for _p in disable-gaia.patch disable-gcm.patch disable-webstore-urls.patch 0005-
 done
 python3 ungoogled-chromium/utils/patches.py apply src ungoogled-chromium/patches
 
-_mg_desub='^(\./)?(google_apis/gaia/|google_apis/google_api_keys\.|components/signin/|components/sync/|components/translate/|chrome/browser/translate/|extensions/common/extension_urls\.|chrome/app/extensions_strings\.grdp|extensions/strings/extensions_strings\.grd|extensions/browser/updater/|chrome/browser/extensions/updater/|components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/UrlConstants\.java|chrome/common/extensions/api/_api_features\.json|extensions/common/api/_api_features\.json)'
+# Files kept out of domain substitution: microG auth/sync, translate, and the
+# search stack. The search entries matter because every prepopulated Google
+# template resolves through google_util's kGoogleHomepageURL, and the starter
+# pack / contextual-tasks / Lens files carry live google.com search URLs; if
+# they are substituted, omnibox search navigates to www.9oo91e.qjz9zk and is
+# blocked with ERR_BLOCKED_BY_CLIENT (seen on device with build #7).
+_mg_desub='^(\./)?(google_apis/gaia/|google_apis/google_api_keys\.|components/signin/|components/sync/|components/translate/|chrome/browser/translate/|components/google/|components/search_engines/|third_party/search_engines_data/|components/contextual_tasks/|components/lens/|chrome/browser/lens/|chrome/browser/ui/lens/|components/ntp_tiles/|components/omnibox/browser/omnibox_field_trial\.|chrome/browser/search_engines/|extensions/common/extension_urls\.|chrome/app/extensions_strings\.grdp|extensions/strings/extensions_strings\.grd|extensions/browser/updater/|chrome/browser/extensions/updater/|components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/UrlConstants\.java|chrome/common/extensions/api/_api_features\.json|extensions/common/api/_api_features\.json)'
 for _sl in ungoogled-chromium/domain_substitution.list "${substitution_list_2:-domain_sub_2.list}"; do
   [ -f "$_sl" ] || continue
   _n0=$(wc -l < "$_sl")
   sed -i -E "\%${_mg_desub}%d" "$_sl"
-  echo "microG: kept $(( _n0 - $(wc -l < "$_sl") )) auth/sync/translate files out of domain substitution ($_sl)"
+  echo "microG: kept $(( _n0 - $(wc -l < "$_sl") )) auth/sync/translate/search files out of domain substitution ($_sl)"
 done
   python3 ungoogled-chromium/utils/domain_substitution.py apply -r ungoogled-chromium/domain_regex.list -f ungoogled-chromium/domain_substitution.list -c ${cache_file} src
 
@@ -370,6 +376,19 @@ echo "translate: layer verified"
 grep -q '"name": "Google"' src/third_party/search_engines_data/resources/definitions/prepopulated_engines.json \
   || { echo "FATAL: Google search engine still replaced by No Search"; exit 1; }
 echo "search engine: Google present"
+grep -q '"https://www.google.com/"' src/components/google/core/common/google_util.cc \
+  || { echo "FATAL: Google base URL still domain-substituted (omnibox search would navigate to a qjz9zk host)"; exit 1; }
+grep -q 'https://gemini.google.com/app' src/components/search_engines/template_url_starter_pack_data.cc \
+  || { echo "FATAL: starter pack search URLs still domain-substituted"; exit 1; }
+for _sf in components/google/core/common/google_util.cc \
+           components/search_engines/template_url_starter_pack_data.cc \
+           components/contextual_tasks/public/features.cc \
+           components/lens/lens_features.cc; do
+  if grep -q 'qjz9zk' "src/$_sf" 2>/dev/null; then
+    echo "FATAL: domain substitution leaked into search-related source: $_sf"; exit 1
+  fi
+done
+echo "search URLs: intact"
 
 for _d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
   cp misc/app_icons/mipmap-${_d}/*.png "src/chrome/android/java/res_chromium_base/mipmap-${_d}/"
