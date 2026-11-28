@@ -253,53 +253,41 @@ if [ "$INSTALL_DEPS" = y ]; then
 fi
 
 if [ "$RESUME" != y ]; then
-  ## Run ungoogled-chromium scripts
-  patch -p1 --ignore-whitespace -i patches/Other/ungoogled-main-repo-fix.patch --no-backup-if-mismatch
+  ## Lumo: ungoogled-chromium removal (build #10): the upstream patch set,
+  ## pruning and domain substitution are no longer applied at all. The
+  ## ungoogled-chromium clone above is kept only as a tools provider
+  ## (utils/patches.py). patches/Other/ungoogled-main-repo-fix.patch only
+  ## edited that repo's flags.gn/pruning.list, so it is gone too:
+  #patch -p1 --ignore-whitespace -i patches/Other/ungoogled-main-repo-fix.patch --no-backup-if-mismatch
   # Remove the cache file if exists
   cache_file="domsubcache.tar.gz"
   if [[ -f ${cache_file} ]] ; then
       rm ${cache_file}
   fi
 
-  # Ignore the pruning error
-  python3 ungoogled-chromium/utils/prune_binaries.py src ungoogled-chromium/pruning.list --keep-contingent-paths || true
-for _p in disable-gaia.patch disable-gcm.patch disable-webstore-urls.patch 0005-disable-default-extensions.patch replace-google-search-engine-with-nosearch.patch disable-google-host-detection.patch disable-profile-avatar-downloading.patch; do
-  if grep -qE "^[^#].*${_p}$" ungoogled-chromium/patches/series; then
-    sed -i "s|^\(.*${_p}\)$|#\1|" ungoogled-chromium/patches/series
-    echo "microG: disabled core/${_p}"
-  fi
-done
-python3 ungoogled-chromium/utils/patches.py apply src ungoogled-chromium/patches
-
-# Files kept out of domain substitution: microG auth/sync, translate, and the
-# search stack. The search entries matter because every prepopulated Google
-# template resolves through google_util's kGoogleHomepageURL, and the starter
-# pack / contextual-tasks / Lens files carry live google.com search URLs; if
-# they are substituted, omnibox search navigates to www.9oo91e.qjz9zk and is
-# blocked with ERR_BLOCKED_BY_CLIENT (seen on device with build #7).
-_mg_desub='^(\./)?(google_apis/gaia/|google_apis/google_api_keys\.|components/signin/|components/sync/|components/translate/|chrome/browser/translate/|components/google/|components/search_engines/|third_party/search_engines_data/|components/contextual_tasks/|components/lens/|chrome/browser/lens/|chrome/browser/ui/lens/|components/ntp_tiles/|components/omnibox/browser/omnibox_field_trial\.|chrome/browser/search_engines/|extensions/common/extension_urls\.|chrome/app/extensions_strings\.grdp|extensions/strings/extensions_strings\.grd|extensions/browser/updater/|chrome/browser/extensions/updater/|components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/UrlConstants\.java|chrome/common/extensions/api/_api_features\.json|extensions/common/api/_api_features\.json)'
-for _sl in ungoogled-chromium/domain_substitution.list "${substitution_list_2:-domain_sub_2.list}"; do
-  [ -f "$_sl" ] || continue
-  _n0=$(wc -l < "$_sl")
-  sed -i -E "\%${_mg_desub}%d" "$_sl"
-  echo "microG: kept $(( _n0 - $(wc -l < "$_sl") )) auth/sync/translate/search files out of domain substitution ($_sl)"
-done
-  python3 ungoogled-chromium/utils/domain_substitution.py apply -r ungoogled-chromium/domain_regex.list -f ungoogled-chromium/domain_substitution.list -c ${cache_file} src
+  # Lumo: binary pruning removed (build #10)
+  #python3 ungoogled-chromium/utils/prune_binaries.py src ungoogled-chromium/pruning.list --keep-contingent-paths || true
+# Lumo: upstream ungoogled patch application and domain substitution
+# removed entirely (build #10). Previously this block disabled 7 core
+# patches for microG, applied ungoogled-chromium/patches, filtered the
+# substitution lists via _mg_desub and ran domain_substitution.py.
+# With no substitution, Google URLs in the source stay intact, so the
+# verification greps further below now assert the pristine state.
 
   # Additional Source Patches
   ## Extra fixes for Chromium source
   python3 ungoogled-chromium/utils/patches.py apply src patches
-  ## Second pruning list
-  pruning_list_2="pruning_2.list"
-  python3 ungoogled-chromium/utils/prune_binaries.py src ${pruning_list_2} --keep-contingent-paths || true
-  ## Second domain substitution list
-  substitution_list_2="domain_sub_2.list"
+  ## Second pruning list -- Lumo: removed (build #10)
+  #pruning_list_2="pruning_2.list"
+  #python3 ungoogled-chromium/utils/prune_binaries.py src ${pruning_list_2} --keep-contingent-paths || true
+  ## Second domain substitution list -- Lumo: removed (build #10)
+  #substitution_list_2="domain_sub_2.list"
   # Remove the cache file if exists
   cache_file="domsubcache.tar.gz"
   if [[ -f ${cache_file} ]] ; then
       rm ${cache_file}
   fi
-  python3 ungoogled-chromium/utils/domain_substitution.py apply -r ungoogled-chromium/domain_regex.list -f ${substitution_list_2} -c ${cache_file} src
+  #python3 ungoogled-chromium/utils/domain_substitution.py apply -r ungoogled-chromium/domain_regex.list -f ${substitution_list_2} -c ${cache_file} src
 
   psa_dat="src/components/privacy_sandbox/privacy_sandbox_attestations/preload/privacy-sandbox-attestations.dat"
   [[ -f ${psa_dat} ]] || : > ${psa_dat}
@@ -401,7 +389,7 @@ echo "icons: applied"
   pushd src
   mkdir -p "${output_folder}"
   if [ "$DEBUG" = n ] ; then
-      cat ../ungoogled-chromium/flags.gn ../android_flags.gn ../android_flags.release.gn > "${output_folder}"/args.gn
+      cat ../android_flags.gn ../android_flags.release.gn > "${output_folder}"/args.gn
       if [ -f ../../uc_keystore/keystore.gn ]; then
           cat ../../uc_keystore/keystore.gn >> "${output_folder}"/args.gn
       fi
