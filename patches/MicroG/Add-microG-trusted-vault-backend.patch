@@ -34,11 +34,83 @@ on the auth-base jar, so they cannot collide, and the Parcel round-trip
 carries their class names. Only the Java package changed for the
 vendored types; the wire protocol (descriptors, transaction numbers,
 field numbers) is untouched.
+
+Connection fix: Morphe MicroG RE renames the key retrieval service
+action. RE 7.4.0 registers org.microg.gms.auth.folsom.KeyRetrievalService
+(exported) only under
+app.revanced.android.gms.auth.key.retrieval.service.START; the standard
+action appears nowhere in its manifest, so the previous bind never
+resolved, the broker handshake never started and getKeyMaterial was
+never called (seen on device as ActivityManager "not found" plus this
+client's "No key retrieval intent available"). FolsomClient now tries,
+for the RE package, the renamed action, then the standard action, then
+an explicit component bind, and logs each bind attempt, a
+PackageManager probe (resolution result and installed version) and the
+handshake outcome so the failure point is visible in logcat.
+
+Failure visibility: failures of this backend used to be silent on
+screen (the settings "verify identity" action logged an error and did
+nothing at all), so two reporting layers are added. In logcat, every
+public operation of FolsomClient and MicroGTrustedVaultBackend logs
+its start and its outcome (result kind and elapsed time), and each
+failure is logged as one line that names the stage (connect,
+handshake, service call, service result, timeout); key material is
+never logged. On screen, failures are classified
+(LumoErrorReporter.Kind) and createKeyRetrievalIntent rejects with a
+TrustedVaultFailureException carrying the classification;
+SyncSettingsUtils turns that into a plain-language Japanese
+explanation dialog instead of only logging it, and background
+fetchKeys failures (connection, handshake, timeout; an empty key list
+is not an error) are recorded and surfaced once from the sync
+settings screen via LumoErrorReporter.showPendingIfAny.
 ---
+diff --git a/chrome/browser/sync/android/java/src/org/chromium/chrome/browser/sync/SyncSettingsUtils.java b/chrome/browser/sync/android/java/src/org/chromium/chrome/browser/sync/SyncSettingsUtils.java
+index d058cef..8bf3b2a 100644
+--- a/chrome/browser/sync/android/java/src/org/chromium/chrome/browser/sync/SyncSettingsUtils.java
++++ b/chrome/browser/sync/android/java/src/org/chromium/chrome/browser/sync/SyncSettingsUtils.java
+@@ -29,7 +29,9 @@ import org.chromium.components.signin.base.CoreAccountInfo;
+ import org.chromium.components.sync.BookmarksLimitExceededHelpClickedSource;
+ import org.chromium.components.sync.SyncService;
+ import org.chromium.components.sync.UserActionableError;
++import org.chromium.components.trusted_vault.LumoErrorReporter;
+ import org.chromium.components.trusted_vault.TrustedVaultClient;
++import org.chromium.components.trusted_vault.TrustedVaultFailureException;
+ import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
+ 
+ import java.lang.annotation.Retention;
+@@ -222,6 +224,16 @@ public class SyncSettingsUtils {
+                             requestCode,
+                             ": ",
+                             assumeNonNull(exception));
++                    // Lumo: with the microG trusted vault backend, a rejection here used to
++                    // be completely silent on screen (the "verify identity" button appeared
++                    // to do nothing). Surface an explanation dialog for backend failures
++                    // that carry a user-presentable classification.
++                    if (exception instanceof TrustedVaultFailureException) {
++                        TrustedVaultFailureException failure =
++                                (TrustedVaultFailureException) exception;
++                        LumoErrorReporter.showError(
++                                fragment.getContext(), failure.getKind(), failure.getDetail());
++                    }
+                 });
+     }
+ 
+@@ -236,6 +248,10 @@ public class SyncSettingsUtils {
+      */
+     public static void openTrustedVaultKeyRetrievalDialog(
+             Fragment fragment, CoreAccountInfo accountInfo, int requestCode) {
++        // Lumo: trusted vault errors recorded in the background (e.g. a failed periodic key
++        // fetch against microG) are surfaced now that the user is interacting with the sync
++        // settings screen.
++        LumoErrorReporter.showPendingIfAny(fragment.getContext());
+         TrustedVaultClient.get()
+                 .recordKeyRetrievalTrigger(TrustedVaultUserActionTriggerForUMA.SETTINGS);
+         openTrustedVaultDialogForPendingIntent(
 diff --git a/components/trusted_vault/android/BUILD.gn b/components/trusted_vault/android/BUILD.gn
+index 6f52d4a..f51c9a5 100644
 --- a/components/trusted_vault/android/BUILD.gn
 +++ b/components/trusted_vault/android/BUILD.gn
-@@ -8,7 +8,20 @@ import("//third_party/jni_zero/jni_zero.gni")
+@@ -8,7 +8,22 @@ import("//third_party/jni_zero/jni_zero.gni")
  android_library("java") {
    srcjar_deps = [ ":jni_headers" ]
    sources = [
@@ -54,14 +126,16 @@ diff --git a/components/trusted_vault/android/BUILD.gn b/components/trusted_vaul
 +    "java/src/org/chromium/components/trusted_vault/gms/Status.java",
 +    "java/src/org/chromium/components/trusted_vault/FolsomClient.java",
 +    "java/src/org/chromium/components/trusted_vault/FolsomSafeParcel.java",
++    "java/src/org/chromium/components/trusted_vault/LumoErrorReporter.java",
 +    "java/src/org/chromium/components/trusted_vault/MicroGTrustedVaultBackend.java",
      "java/src/org/chromium/components/trusted_vault/TrustedVaultClient.java",
++    "java/src/org/chromium/components/trusted_vault/TrustedVaultFailureException.java",
    ]
    deps = [
      "//base:base_java",
 diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/SharedKey.java b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/SharedKey.java
 new file mode 100644
-index 0000000000000..ca93806cadacc
+index 0000000..ca93806
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/SharedKey.java
 @@ -0,0 +1,74 @@
@@ -141,7 +215,7 @@ index 0000000000000..ca93806cadacc
 +}
 diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalCallback.java b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalCallback.java
 new file mode 100644
-index 0000000000000..41d7547e24b46
+index 0000000..80fc043
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalCallback.java
 @@ -0,0 +1,105 @@
@@ -252,7 +326,7 @@ index 0000000000000..41d7547e24b46
 +}
 diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalService.java b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalService.java
 new file mode 100644
-index 0000000000000..780e14a416fa9
+index 0000000..abc665a
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/IKeyRetrievalService.java
 @@ -0,0 +1,157 @@
@@ -415,7 +489,7 @@ index 0000000000000..780e14a416fa9
 +}
 diff --git a/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/ISharedKeyCallback.java b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/ISharedKeyCallback.java
 new file mode 100644
-index 0000000000000..3f21eb626a84e
+index 0000000..1c8b1ca
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/com/google/android/gms/auth/folsom/internal/ISharedKeyCallback.java
 @@ -0,0 +1,108 @@
@@ -527,721 +601,12 @@ index 0000000000000..3f21eb626a84e
 +        }
 +    }
 +}
-diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ApiMetadata.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ApiMetadata.java
-new file mode 100644
-index 0000000000000..2936711885193b78e7e4413cadfa35957660fd00
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ApiMetadata.java
-@@ -0,0 +1,66 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Minimal stand-in for the SafeParcelable of the same name in microG GmsCore
-+ * (play-services-basement). The trusted vault backend always passes null
-+ * metadata to the Folsom service (microG accepts null), so this class is
-+ * only ever a compile-time type and is never written to a Parcel by this
-+ * client; the write path below mirrors microG's layout (a magic int
-+ * followed by an empty SafeParcel object) so that a non-null value would
-+ * still parse on the service side. Field numbers are part of the protocol
-+ * and must not change: 1 = compliance options, 2 = boolean.
-+ *
-+ * This class lives in org.chromium.components.trusted_vault.gms instead of
-+ * com.google.android.gms.common.api because the Play services basement jar
-+ * already ships an ApiMetadata under that name and R8 rejects the duplicate
-+ * class at dex time. Only the Java package changed; the wire format above
-+ * is untouched.
-+ */
-+
-+package org.chromium.components.trusted_vault.gms;
-+
-+import android.os.Parcel;
-+import android.os.Parcelable;
-+
-+import org.chromium.components.trusted_vault.FolsomSafeParcel;
-+
-+/** Optional metadata attached to a Folsom service call; always null in practice. */
-+public class ApiMetadata implements Parcelable {
-+    // Magic written by microG before the object; the reader checks for it first.
-+    private static final int METADATA_PRESENT_MAGIC = -204102970;
-+
-+    public ApiMetadata() {}
-+
-+    @Override
-+    public int describeContents() {
-+        return 0;
-+    }
-+
-+    @Override
-+    public void writeToParcel(Parcel dest, int flags) {
-+        dest.writeInt(METADATA_PRESENT_MAGIC);
-+        int start = FolsomSafeParcel.beginObject(dest);
-+        FolsomSafeParcel.finishObject(dest, start);
-+    }
-+
-+    public static final Creator<ApiMetadata> CREATOR =
-+            new Creator<ApiMetadata>() {
-+                @Override
-+                public ApiMetadata createFromParcel(Parcel source) {
-+                    int startPosition = source.dataPosition();
-+                    if (source.readInt() != METADATA_PRESENT_MAGIC) {
-+                        source.setDataPosition(startPosition);
-+                        return new ApiMetadata();
-+                    }
-+                    int end = FolsomSafeParcel.readObjectEnd(source);
-+                    source.setDataPosition(end);
-+                    return new ApiMetadata();
-+                }
-+
-+                @Override
-+                public ApiMetadata[] newArray(int size) {
-+                    return new ApiMetadata[size];
-+                }
-+            };
-+}
-diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ConnectionInfo.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ConnectionInfo.java
-new file mode 100644
-index 0000000000000..68aed48f56654456e04f5a990a97f6758bb88908
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ConnectionInfo.java
-@@ -0,0 +1,79 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written from the SafeParcelable definition of the same name in microG
-+ * GmsCore (play-services-basement) so the trusted vault backend can receive
-+ * the GMS broker handshake result from microG without the Play services SDK.
-+ * Field numbers and the wire format are part of the protocol and must not
-+ * change: 1 = params (Bundle), 2 = features (Feature[], not modelled by this
-+ * client; skipped when reading), 3 = int.
-+ *
-+ * This class lives in org.chromium.components.trusted_vault.gms instead of
-+ * com.google.android.gms.common.internal because the Play services basement
-+ * jar already ships a ConnectionInfo under that name and R8 rejects the
-+ * duplicate class at dex time. Only the Java package changed; the wire
-+ * format above is untouched.
-+ */
-+
-+package org.chromium.components.trusted_vault.gms;
-+
-+import android.os.Bundle;
-+import android.os.Parcel;
-+import android.os.Parcelable;
-+
-+import org.chromium.components.trusted_vault.FolsomSafeParcel;
-+
-+public class ConnectionInfo implements Parcelable {
-+    public Bundle params;
-+    public int unknown3;
-+
-+    public ConnectionInfo() {}
-+
-+    @Override
-+    public int describeContents() {
-+        return 0;
-+    }
-+
-+    @Override
-+    public void writeToParcel(Parcel dest, int flags) {
-+        int start = FolsomSafeParcel.beginObject(dest);
-+        FolsomSafeParcel.writeBundle(dest, 1, params, false);
-+        FolsomSafeParcel.writeInt(dest, 3, unknown3);
-+        FolsomSafeParcel.finishObject(dest, start);
-+    }
-+
-+    public static final Creator<ConnectionInfo> CREATOR =
-+            new Creator<ConnectionInfo>() {
-+                @Override
-+                public ConnectionInfo createFromParcel(Parcel source) {
-+                    int end = FolsomSafeParcel.readObjectEnd(source);
-+                    ConnectionInfo result = new ConnectionInfo();
-+                    while (source.dataPosition() < end) {
-+                        int header = source.readInt();
-+                        switch (FolsomSafeParcel.getFieldId(header)) {
-+                            case 1:
-+                                result.params =
-+                                        FolsomSafeParcel.readBundle(
-+                                                source,
-+                                                header,
-+                                                ConnectionInfo.class.getClassLoader());
-+                                break;
-+                            case 3:
-+                                result.unknown3 = FolsomSafeParcel.readInt(source, header);
-+                                break;
-+                            default:
-+                                FolsomSafeParcel.skip(source, header);
-+                                break;
-+                        }
-+                    }
-+                    source.setDataPosition(end);
-+                    return result;
-+                }
-+
-+                @Override
-+                public ConnectionInfo[] newArray(int size) {
-+                    return new ConnectionInfo[size];
-+                }
-+            };
-+}
-diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java
-new file mode 100644
-index 0000000000000..65d772b4ebc75
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java
-@@ -0,0 +1,111 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written from the SafeParcelable definition of the same name in microG
-+ * GmsCore (play-services-basement) so the trusted vault backend can perform
-+ * the GMS broker handshake with microG without the Play services SDK. Field
-+ * numbers and the wire format are part of the protocol and must not change:
-+ * 1 = version code (int), 2 = service id (int), 3 = GMS version (int),
-+ * 4 = package name (String), 5 = account accessor (binder), 6 = scopes,
-+ * 7 = extras (Bundle), 8 = account, 9 = (deprecated long), 10/11 = features,
-+ * 12 = supports connection info (boolean), 13 = int, 14 = boolean,
-+ * 15 = attribution tag (String). This client only sets the fields the Folsom
-+ * handshake needs; the rest are written with their default values or omitted
-+ * (absent reference fields read back as null on the service side).
-+ *
-+ * This class lives in org.chromium.components.trusted_vault.gms instead of
-+ * com.google.android.gms.common.internal because the Play services basement
-+ * jar already ships a GetServiceRequest under that name and R8 rejects the
-+ * duplicate class at dex time. The real basement class cannot be used here:
-+ * it has no public constructor and no public packageName/extras fields, so
-+ * the handshake request cannot be built with it. Only the Java package
-+ * changed; the wire format above is untouched.
-+ */
-+
-+package org.chromium.components.trusted_vault.gms;
-+
-+import android.os.Bundle;
-+import android.os.Parcel;
-+import android.os.Parcelable;
-+
-+import org.chromium.components.trusted_vault.FolsomSafeParcel;
-+
-+public class GetServiceRequest implements Parcelable {
-+    private static final int VERSION_CODE = 6;
-+    // GMS version code of the microG generation this client targets. The broker
-+    // does not branch on this value for the Folsom service.
-+    private static final int GMS_VERSION_CODE = 252432000;
-+
-+    public int serviceId;
-+    public String packageName;
-+    public Bundle extras;
-+    public boolean supportsConnectionInfo = true;
-+
-+    public GetServiceRequest(int serviceId) {
-+        this.serviceId = serviceId;
-+    }
-+
-+    private GetServiceRequest() {}
-+
-+    @Override
-+    public int describeContents() {
-+        return 0;
-+    }
-+
-+    @Override
-+    public void writeToParcel(Parcel dest, int flags) {
-+        int start = FolsomSafeParcel.beginObject(dest);
-+        FolsomSafeParcel.writeInt(dest, 1, VERSION_CODE);
-+        FolsomSafeParcel.writeInt(dest, 2, serviceId);
-+        FolsomSafeParcel.writeInt(dest, 3, GMS_VERSION_CODE);
-+        FolsomSafeParcel.writeString(dest, 4, packageName, false);
-+        FolsomSafeParcel.writeBundle(dest, 7, extras, false);
-+        FolsomSafeParcel.writeLong(dest, 9, 0);
-+        FolsomSafeParcel.writeBoolean(dest, 12, supportsConnectionInfo);
-+        FolsomSafeParcel.writeInt(dest, 13, 0);
-+        FolsomSafeParcel.writeBoolean(dest, 14, false);
-+        FolsomSafeParcel.finishObject(dest, start);
-+    }
-+
-+    public static final Creator<GetServiceRequest> CREATOR =
-+            new Creator<GetServiceRequest>() {
-+                @Override
-+                public GetServiceRequest createFromParcel(Parcel source) {
-+                    int end = FolsomSafeParcel.readObjectEnd(source);
-+                    GetServiceRequest result = new GetServiceRequest();
-+                    while (source.dataPosition() < end) {
-+                        int header = source.readInt();
-+                        switch (FolsomSafeParcel.getFieldId(header)) {
-+                            case 2:
-+                                result.serviceId = FolsomSafeParcel.readInt(source, header);
-+                                break;
-+                            case 4:
-+                                result.packageName = FolsomSafeParcel.readString(source, header);
-+                                break;
-+                            case 7:
-+                                result.extras =
-+                                        FolsomSafeParcel.readBundle(
-+                                                source,
-+                                                header,
-+                                                GetServiceRequest.class.getClassLoader());
-+                                break;
-+                            case 12:
-+                                result.supportsConnectionInfo =
-+                                        FolsomSafeParcel.readBoolean(source, header);
-+                                break;
-+                            default:
-+                                FolsomSafeParcel.skip(source, header);
-+                                break;
-+                        }
-+                    }
-+                    source.setDataPosition(end);
-+                    return result;
-+                }
-+
-+                @Override
-+                public GetServiceRequest[] newArray(int size) {
-+                    return new GetServiceRequest[size];
-+                }
-+            };
-+}
-diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java
-new file mode 100644
-index 0000000000000..b65fa1cc9d582
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java
-@@ -0,0 +1,199 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written in the style of AIDL-generated code from the interface
-+ * definition of the same name in microG GmsCore (play-services-basement) so
-+ * the trusted vault backend can complete the GMS broker handshake with
-+ * microG without the Play services SDK. The interface descriptor and
-+ * transaction numbers are part of the protocol and must not change.
-+ *
-+ * This interface lives in org.chromium.components.trusted_vault.gms instead
-+ * of com.google.android.gms.common.internal because the Play services
-+ * basement jar already ships an IGmsCallbacks under that name and R8
-+ * rejects the duplicate class at dex time. The real basement interface
-+ * cannot be used here: it has no Stub and its methods are obfuscated
-+ * (zzb/zzc), so the handshake callbacks cannot be implemented against it.
-+ * Only the Java package changed; the descriptor string and transaction
-+ * numbers above are untouched.
-+ */
-+
-+package org.chromium.components.trusted_vault.gms;
-+
-+import android.os.Binder;
-+import android.os.Bundle;
-+import android.os.IBinder;
-+import android.os.IInterface;
-+import android.os.Parcel;
-+import android.os.RemoteException;
-+
-+import org.chromium.components.trusted_vault.gms.ConnectionInfo;
-+
-+public interface IGmsCallbacks extends IInterface {
-+    void onPostInitComplete(int statusCode, IBinder binder, Bundle params) throws RemoteException;
-+
-+    void onAccountValidationComplete(int statusCode, Bundle params) throws RemoteException;
-+
-+    void onPostInitCompleteWithConnectionInfo(int statusCode, IBinder binder, ConnectionInfo info)
-+            throws RemoteException;
-+
-+    abstract class Stub extends Binder implements IGmsCallbacks {
-+        private static final String DESCRIPTOR = "com.google.android.gms.common.internal.IGmsCallbacks";
-+
-+        static final int TRANSACTION_onPostInitComplete = IBinder.FIRST_CALL_TRANSACTION;
-+        static final int TRANSACTION_onAccountValidationComplete =
-+                IBinder.FIRST_CALL_TRANSACTION + 1;
-+        static final int TRANSACTION_onPostInitCompleteWithConnectionInfo =
-+                IBinder.FIRST_CALL_TRANSACTION + 2;
-+
-+        public Stub() {
-+            attachInterface(this, DESCRIPTOR);
-+        }
-+
-+        public static IGmsCallbacks asInterface(IBinder binder) {
-+            if (binder == null) {
-+                return null;
-+            }
-+            IInterface local = binder.queryLocalInterface(DESCRIPTOR);
-+            if (local instanceof IGmsCallbacks) {
-+                return (IGmsCallbacks) local;
-+            }
-+            return new Proxy(binder);
-+        }
-+
-+        @Override
-+        public IBinder asBinder() {
-+            return this;
-+        }
-+
-+        @Override
-+        public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
-+                throws RemoteException {
-+            switch (code) {
-+                case IBinder.INTERFACE_TRANSACTION: {
-+                    reply.writeString(DESCRIPTOR);
-+                    return true;
-+                }
-+                case TRANSACTION_onPostInitComplete: {
-+                    data.enforceInterface(DESCRIPTOR);
-+                    int statusCode = data.readInt();
-+                    IBinder binder = data.readStrongBinder();
-+                    // The bundle argument is not used by this client; read it defensively so a
-+                    // malformed or absent bundle cannot break the handshake.
-+                    Bundle params = null;
-+                    if (data.dataAvail() > 0) {
-+                        try {
-+                            params = data.readBundle(IGmsCallbacks.class.getClassLoader());
-+                        } catch (Exception ignored) {
-+                            params = null;
-+                        }
-+                    }
-+                    onPostInitComplete(statusCode, binder, params);
-+                    reply.writeNoException();
-+                    return true;
-+                }
-+                case TRANSACTION_onAccountValidationComplete: {
-+                    data.enforceInterface(DESCRIPTOR);
-+                    int statusCode = data.readInt();
-+                    Bundle params = null;
-+                    if (data.dataAvail() > 0) {
-+                        try {
-+                            params = data.readBundle(IGmsCallbacks.class.getClassLoader());
-+                        } catch (Exception ignored) {
-+                            params = null;
-+                        }
-+                    }
-+                    onAccountValidationComplete(statusCode, params);
-+                    reply.writeNoException();
-+                    return true;
-+                }
-+                case TRANSACTION_onPostInitCompleteWithConnectionInfo: {
-+                    data.enforceInterface(DESCRIPTOR);
-+                    int statusCode = data.readInt();
-+                    IBinder binder = data.readStrongBinder();
-+                    ConnectionInfo info =
-+                            data.readInt() != 0
-+                                    ? ConnectionInfo.CREATOR.createFromParcel(data)
-+                                    : null;
-+                    onPostInitCompleteWithConnectionInfo(statusCode, binder, info);
-+                    reply.writeNoException();
-+                    return true;
-+                }
-+                default:
-+                    return super.onTransact(code, data, reply, flags);
-+            }
-+        }
-+
-+        private static class Proxy implements IGmsCallbacks {
-+            private final IBinder mRemote;
-+
-+            Proxy(IBinder remote) {
-+                mRemote = remote;
-+            }
-+
-+            @Override
-+            public IBinder asBinder() {
-+                return mRemote;
-+            }
-+
-+            @Override
-+            public void onPostInitComplete(int statusCode, IBinder binder, Bundle params)
-+                    throws RemoteException {
-+                Parcel data = Parcel.obtain();
-+                Parcel reply = Parcel.obtain();
-+                try {
-+                    data.writeInterfaceToken(DESCRIPTOR);
-+                    data.writeInt(statusCode);
-+                    data.writeStrongBinder(binder);
-+                    data.writeBundle(params);
-+                    mRemote.transact(TRANSACTION_onPostInitComplete, data, reply, 0);
-+                    reply.readException();
-+                } finally {
-+                    reply.recycle();
-+                    data.recycle();
-+                }
-+            }
-+
-+            @Override
-+            public void onAccountValidationComplete(int statusCode, Bundle params)
-+                    throws RemoteException {
-+                Parcel data = Parcel.obtain();
-+                Parcel reply = Parcel.obtain();
-+                try {
-+                    data.writeInterfaceToken(DESCRIPTOR);
-+                    data.writeInt(statusCode);
-+                    data.writeBundle(params);
-+                    mRemote.transact(TRANSACTION_onAccountValidationComplete, data, reply, 0);
-+                    reply.readException();
-+                } finally {
-+                    reply.recycle();
-+                    data.recycle();
-+                }
-+            }
-+
-+            @Override
-+            public void onPostInitCompleteWithConnectionInfo(
-+                    int statusCode, IBinder binder, ConnectionInfo info) throws RemoteException {
-+                Parcel data = Parcel.obtain();
-+                Parcel reply = Parcel.obtain();
-+                try {
-+                    data.writeInterfaceToken(DESCRIPTOR);
-+                    data.writeInt(statusCode);
-+                    data.writeStrongBinder(binder);
-+                    if (info != null) {
-+                        data.writeInt(1);
-+                        info.writeToParcel(data, 0);
-+                    } else {
-+                        data.writeInt(0);
-+                    }
-+                    mRemote.transact(
-+                            TRANSACTION_onPostInitCompleteWithConnectionInfo, data, reply, 0);
-+                    reply.readException();
-+                } finally {
-+                    reply.recycle();
-+                    data.recycle();
-+                }
-+            }
-+        }
-+    }
-+}
-diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java
-new file mode 100644
-index 0000000000000..6a4f6ef0b5ff9
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java
-@@ -0,0 +1,102 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written in the style of AIDL-generated code from the interface
-+ * definition of the same name in microG GmsCore (play-services-basement) so
-+ * the trusted vault backend can perform the GMS broker handshake with
-+ * microG without the Play services SDK. The interface descriptor and the
-+ * transaction number of getService (45) are part of the protocol and must
-+ * not change. Only getService is declared: it is the single broker method
-+ * this client uses. The server-side Stub is never implemented by this
-+ * client (the broker lives in the microG process), so it is kept abstract.
-+ *
-+ * This interface lives in org.chromium.components.trusted_vault.gms instead
-+ * of com.google.android.gms.common.internal because the Play services
-+ * basement jar already ships an IGmsServiceBroker (and Stub) under that
-+ * name and R8 rejects the duplicate class at dex time. The real basement
-+ * Stub cannot be used here: it has no asInterface method, so the broker
-+ * binder cannot be wrapped with it. Only the Java package changed; the
-+ * descriptor string and transaction number above are untouched.
-+ */
-+
-+package org.chromium.components.trusted_vault.gms;
-+
-+import android.os.Binder;
-+import android.os.IBinder;
-+import android.os.IInterface;
-+import android.os.Parcel;
-+import android.os.RemoteException;
-+
-+public interface IGmsServiceBroker extends IInterface {
-+    void getService(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException;
-+
-+    abstract class Stub extends Binder implements IGmsServiceBroker {
-+        private static final String DESCRIPTOR =
-+                "com.google.android.gms.common.internal.IGmsServiceBroker";
-+
-+        static final int TRANSACTION_getService = IBinder.FIRST_CALL_TRANSACTION + 45;
-+
-+        public Stub() {
-+            attachInterface(this, DESCRIPTOR);
-+        }
-+
-+        public static IGmsServiceBroker asInterface(IBinder binder) {
-+            if (binder == null) {
-+                return null;
-+            }
-+            IInterface local = binder.queryLocalInterface(DESCRIPTOR);
-+            if (local instanceof IGmsServiceBroker) {
-+                return (IGmsServiceBroker) local;
-+            }
-+            return new Proxy(binder);
-+        }
-+
-+        @Override
-+        public IBinder asBinder() {
-+            return this;
-+        }
-+
-+        @Override
-+        public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
-+                throws RemoteException {
-+            // Client-side only: this process never hosts the broker.
-+            return super.onTransact(code, data, reply, flags);
-+        }
-+
-+        private static class Proxy implements IGmsServiceBroker {
-+            private final IBinder mRemote;
-+
-+            Proxy(IBinder remote) {
-+                mRemote = remote;
-+            }
-+
-+            @Override
-+            public IBinder asBinder() {
-+                return mRemote;
-+            }
-+
-+            @Override
-+            public void getService(IGmsCallbacks callback, GetServiceRequest request)
-+                    throws RemoteException {
-+                Parcel data = Parcel.obtain();
-+                Parcel reply = Parcel.obtain();
-+                try {
-+                    data.writeInterfaceToken(DESCRIPTOR);
-+                    data.writeStrongBinder(callback != null ? callback.asBinder() : null);
-+                    if (request != null) {
-+                        data.writeInt(1);
-+                        request.writeToParcel(data, 0);
-+                    } else {
-+                        data.writeInt(0);
-+                    }
-+                    mRemote.transact(TRANSACTION_getService, data, reply, 0);
-+                    reply.readException();
-+                } finally {
-+                    reply.recycle();
-+                    data.recycle();
-+                }
-+            }
-+        }
-+    }
-+}
-diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/Status.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/Status.java
-new file mode 100644
-index 0000000000000..62e7ed49fac4c4fbe0b6ace37cd8e9568608bd37
---- /dev/null
-+++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/Status.java
-@@ -0,0 +1,116 @@
-+/*
-+ * SPDX-FileCopyrightText: 2025 microG Project Team
-+ * SPDX-License-Identifier: Apache-2.0
-+ *
-+ * Hand-written from the SafeParcelable definition of the same name in microG
-+ * GmsCore (play-services-basement) so the trusted vault backend can read the
-+ * result of a Folsom service call without the Play services SDK. Field
-+ * numbers and the wire format are part of the protocol and must not change:
-+ * 1000 = version code (int), 1 = status code (int), 2 = status message
-+ * (String), 3 = resolution (PendingIntent).
-+ *
-+ * This class lives in org.chromium.components.trusted_vault.gms instead of
-+ * com.google.android.gms.common.api because the Play services basement jar
-+ * already ships a Status under that name and R8 rejects the duplicate class
-+ * at dex time. Only the Java package changed; the wire format above is
-+ * untouched. The status is only ever read from a Parcel written by the
-+ * service (microG), never written by this client, but writeToParcel mirrors
-+ * the same layout for completeness.
-+ */
-+
-+package org.chromium.components.trusted_vault.gms;
-+
-+import android.app.PendingIntent;
-+import android.os.Parcel;
-+import android.os.Parcelable;
-+
-+import org.chromium.components.trusted_vault.FolsomSafeParcel;
-+
-+/** The result of a GMS service call, as returned by the microG Folsom service. */
-+public class Status implements Parcelable {
-+    private int statusCode;
-+    private String statusMessage;
-+    private PendingIntent resolution;
-+
-+    public Status() {}
-+
-+    public Status(int statusCode, String statusMessage, PendingIntent resolution) {
-+        this.statusCode = statusCode;
-+        this.statusMessage = statusMessage;
-+        this.resolution = resolution;
-+    }
-+
-+    public int getStatusCode() {
-+        return statusCode;
-+    }
-+
-+    public String getStatusMessage() {
-+        return statusMessage;
-+    }
-+
-+    /** A pending intent that resolves the failure, or null when there is none. */
-+    public PendingIntent getResolution() {
-+        return resolution;
-+    }
-+
-+    /** Returns true when a resolution intent is available. */
-+    public boolean hasResolution() {
-+        return resolution != null;
-+    }
-+
-+    /** Returns true when the operation was successful (status code <= 0). */
-+    public boolean isSuccess() {
-+        return statusCode <= 0;
-+    }
-+
-+    @Override
-+    public int describeContents() {
-+        return 0;
-+    }
-+
-+    @Override
-+    public void writeToParcel(Parcel dest, int flags) {
-+        int start = FolsomSafeParcel.beginObject(dest);
-+        FolsomSafeParcel.writeInt(dest, 1000, 1);
-+        FolsomSafeParcel.writeInt(dest, 1, statusCode);
-+        FolsomSafeParcel.writeString(dest, 2, statusMessage, false);
-+        FolsomSafeParcel.writeParcelable(dest, 3, resolution, flags, false);
-+        FolsomSafeParcel.finishObject(dest, start);
-+    }
-+
-+    public static final Creator<Status> CREATOR =
-+            new Creator<Status>() {
-+                @Override
-+                public Status createFromParcel(Parcel source) {
-+                    int end = FolsomSafeParcel.readObjectEnd(source);
-+                    Status result = new Status();
-+                    while (source.dataPosition() < end) {
-+                        int header = source.readInt();
-+                        switch (FolsomSafeParcel.getFieldId(header)) {
-+                            case 1:
-+                                result.statusCode = FolsomSafeParcel.readInt(source, header);
-+                                break;
-+                            case 2:
-+                                result.statusMessage =
-+                                        FolsomSafeParcel.readString(source, header);
-+                                break;
-+                            case 3:
-+                                result.resolution =
-+                                        FolsomSafeParcel.readParcelable(
-+                                                source, header, PendingIntent.CREATOR);
-+                                break;
-+                            default:
-+                                FolsomSafeParcel.skip(source, header);
-+                                break;
-+                        }
-+                    }
-+                    source.setDataPosition(end);
-+                    return result;
-+                }
-+
-+                @Override
-+                public Status[] newArray(int size) {
-+                    return new Status[size];
-+                }
-+            };
-+}
 diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomClient.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomClient.java
 new file mode 100644
-index 0000000000000..39bd8606ffbed
+index 0000000..fee1195
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomClient.java
-@@ -0,0 +1,555 @@
+@@ -0,0 +1,874 @@
 +// Copyright 2025 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1253,11 +618,14 @@ index 0000000000000..39bd8606ffbed
 +import android.content.Context;
 +import android.content.Intent;
 +import android.content.ServiceConnection;
++import android.content.pm.PackageManager;
++import android.content.pm.ResolveInfo;
 +import android.os.Bundle;
 +import android.os.Handler;
 +import android.os.IBinder;
 +import android.os.Looper;
 +import android.os.RemoteException;
++import android.os.SystemClock;
 +import android.util.Log;
 +
 +import com.google.android.gms.auth.folsom.SharedKey;
@@ -1277,8 +645,10 @@ index 0000000000000..39bd8606ffbed
 +import java.util.ArrayList;
 +import java.util.Collections;
 +import java.util.HashMap;
++import java.util.HashSet;
 +import java.util.List;
 +import java.util.Map;
++import java.util.Set;
 +
 +/**
 + * Client for the microG "Folsom" key retrieval service (the GMS trusted vault backend).
@@ -1289,6 +659,12 @@ index 0000000000000..39bd8606ffbed
 + * IGmsServiceBroker#getService}) with service id 172 and a {@code SECURITY_DOMAIN} extra of
 + * {@code "chromesync"} in the request. Without that extra the service refuses the handshake.
 + *
++ * <p>Morphe MicroG RE registers the same service under an action namespaced with its own
++ * package name instead of the standard GMS action (verified against the RE 7.4.0 manifest:
++ * the service class is present and exported, but the standard action appears nowhere in it),
++ * so the standard action never resolves there and several bind variants are tried in order;
++ * see {@link #buildBindAttempts()}.
++ *
 + * <p>All state is confined to the main thread. Binder callbacks are posted to the main thread
 + * before touching any state, and every operation completes its {@link Promise} on the main
 + * thread, where the trusted vault backend's callers live. Operations never throw: failures are
@@ -1296,15 +672,27 @@ index 0000000000000..39bd8606ffbed
 + * one), and every operation has a timeout so a hung service cannot block sync forever.
 + *
 + * <p>Key material is never logged; only key counts and versions are.
++ *
++ * <p>Every public operation logs its start and its outcome (result kind and elapsed time) so
++ * a single logcat capture shows how far a failing request got. Failures are also classified
++ * into {@link LumoErrorReporter.Kind}: connection and handshake failures are recorded via
++ * {@link LumoErrorReporter#reportBackgroundError} so they can be surfaced on screen later,
++ * and {@link #createKeyRetrievalIntent} rejects with a {@link TrustedVaultFailureException}
++ * carrying the classification, which the settings UI turns into an explanatory dialog.
 + */
 +final class FolsomClient {
 +    private static final String TAG = "FolsomClient";
 +
 +    private static final String ACTION_KEY_RETRIEVAL =
 +            "com.google.android.gms.auth.key.retrieval.service.START";
++    // Morphe MicroG RE registers the key retrieval service under this renamed action
++    // (its own package prefix) instead of the standard GMS action above.
++    private static final String ACTION_KEY_RETRIEVAL_RE =
++            "app.revanced.android.gms.auth.key.retrieval.service.START";
++    private static final String CLASS_KEY_RETRIEVAL_SERVICE =
++            "org.microg.gms.auth.folsom.KeyRetrievalService";
 +    private static final String PACKAGE_MORPHE_MICROG = "app.revanced.android.gms";
 +    private static final String PACKAGE_MICROG = "com.google.android.gms";
-+    private static final String[] GMS_PACKAGES = {PACKAGE_MORPHE_MICROG, PACKAGE_MICROG};
 +
 +    private static final int SERVICE_ID_FOLSOM = 172;
 +    private static final String EXTRA_SECURITY_DOMAIN = "SECURITY_DOMAIN";
@@ -1334,7 +722,13 @@ index 0000000000000..39bd8606ffbed
 +    private boolean mConnecting;
 +    private int mConnectGeneration;
 +    private final List<ConnectionWaiter> mConnectionWaiters = new ArrayList<>();
++    private final List<BindAttempt> mBindAttempts = buildBindAttempts();
++    private final Set<String> mProbedPackages = new HashSet<>();
 +    private final Map<String, PendingOp<List<byte[]>>> mFetchInFlight = new HashMap<>();
++    // Classification of the most recent connection-sequence failure, used to explain a
++    // failed operation to the user. Reset at the start of each connection sequence.
++    private LumoErrorReporter.Kind mLastConnectFailureKind;
++    private String mLastConnectFailureDetail;
 +    private String mLastRetrievalIntentAccount;
 +    private PendingIntent mLastRetrievalIntent;
 +
@@ -1346,13 +740,67 @@ index 0000000000000..39bd8606ffbed
 +        void onConnectionFailed();
 +    }
 +
++    /** One way of reaching the key retrieval service's broker binder. */
++    private static final class BindAttempt {
++        final Intent intent;
++        final String description;
++
++        BindAttempt(Intent intent, String description) {
++            this.intent = intent;
++            this.description = description;
++        }
++
++        String packageName() {
++            return intent.getComponent() != null
++                    ? intent.getComponent().getPackageName()
++                    : intent.getPackage();
++        }
++    }
++
++    /**
++     * The bind variants to try, in order. Morphe MicroG RE comes first: its renamed action,
++     * then the standard action, then an explicit component bind (the service is exported, so
++     * naming the class directly reaches it regardless of intent filters). The stock GMS
++     * package name keeps the standard action only.
++     */
++    private static List<BindAttempt> buildBindAttempts() {
++        List<BindAttempt> attempts = new ArrayList<>();
++        attempts.add(
++                new BindAttempt(
++                        new Intent(ACTION_KEY_RETRIEVAL_RE).setPackage(PACKAGE_MORPHE_MICROG),
++                        "action " + ACTION_KEY_RETRIEVAL_RE + " in " + PACKAGE_MORPHE_MICROG));
++        attempts.add(
++                new BindAttempt(
++                        new Intent(ACTION_KEY_RETRIEVAL).setPackage(PACKAGE_MORPHE_MICROG),
++                        "action " + ACTION_KEY_RETRIEVAL + " in " + PACKAGE_MORPHE_MICROG));
++        attempts.add(
++                new BindAttempt(
++                        new Intent()
++                                .setComponent(
++                                        new ComponentName(
++                                                PACKAGE_MORPHE_MICROG,
++                                                CLASS_KEY_RETRIEVAL_SERVICE)),
++                        "component "
++                                + PACKAGE_MORPHE_MICROG
++                                + "/"
++                                + CLASS_KEY_RETRIEVAL_SERVICE));
++        attempts.add(
++                new BindAttempt(
++                        new Intent(ACTION_KEY_RETRIEVAL).setPackage(PACKAGE_MICROG),
++                        "action " + ACTION_KEY_RETRIEVAL + " in " + PACKAGE_MICROG));
++        return attempts;
++    }
++
 +    /** An operation in progress; completes its promise at most once, on the main thread. */
 +    private class PendingOp<T> {
 +        final Promise<T> promise = new Promise<>();
++        private final String mOpName;
++        private final long mStartMs = SystemClock.elapsedRealtime();
 +        private final Runnable mOnDone;
 +        private boolean mDone;
 +
-+        PendingOp(Runnable onDone) {
++        PendingOp(String opName, Runnable onDone) {
++            mOpName = opName;
 +            mOnDone = onDone;
 +            mMainHandler.postDelayed(mTimeoutRunnable, TIMEOUT_MS);
 +        }
@@ -1366,6 +814,15 @@ index 0000000000000..39bd8606ffbed
 +
 +        /** Subclass hook invoked (once) when the operation times out. */
 +        void onTimeout() {}
++
++        /** Short description of a successful result, for the completion log line. */
++        String describeResult(T value) {
++            return "completed";
++        }
++
++        long elapsedMs() {
++            return SystemClock.elapsedRealtime() - mStartMs;
++        }
 +
 +        boolean isDone() {
 +            return mDone;
@@ -1381,12 +838,21 @@ index 0000000000000..39bd8606ffbed
 +
 +        void complete(T value) {
 +            if (markDone() && promise.isPending()) {
++                Log.i(
++                        TAG,
++                        mOpName
++                                + ": finished OK ("
++                                + describeResult(value)
++                                + ") in "
++                                + elapsedMs()
++                                + "ms");
 +                promise.fulfill(value);
 +            }
 +        }
 +
 +        void fail(Exception e) {
 +            if (markDone() && promise.isPending()) {
++                Log.w(TAG, mOpName + ": FAILED in " + elapsedMs() + "ms", e);
 +                promise.reject(e);
 +            }
 +        }
@@ -1412,16 +878,28 @@ index 0000000000000..39bd8606ffbed
 +    Promise<List<byte[]>> fetchKeys(final String email) {
 +        PendingOp<List<byte[]>> inFlight = mFetchInFlight.get(email);
 +        if (inFlight != null && !inFlight.isDone()) {
++            Log.i(TAG, "fetchKeys: start (joining the in-flight request)");
 +            return inFlight.promise;
 +        }
++        Log.i(TAG, "fetchKeys: start");
 +        final PendingOp<List<byte[]>> op =
-+                new PendingOp<List<byte[]>>(() -> mFetchInFlight.remove(email)) {
++                new PendingOp<List<byte[]>>("fetchKeys", () -> mFetchInFlight.remove(email)) {
 +                    @Override
 +                    void onTimeout() {
-+                        Log.w(TAG, "fetchKeys timed out");
++                        Log.w(
++                                TAG,
++                                "fetchKeys: FAILED stage=timeout after "
++                                        + elapsedMs()
++                                        + "ms, returning no keys");
++                        LumoErrorReporter.reportBackgroundError(LumoErrorReporter.Kind.TIMEOUT);
 +                        if (promise.isPending()) {
 +                            promise.fulfill(Collections.emptyList());
 +                        }
++                    }
++
++                    @Override
++                    String describeResult(List<byte[]> keys) {
++                        return keys == null ? "no result" : keys.size() + " key(s)";
 +                    }
 +                };
 +        mFetchInFlight.put(email, op);
@@ -1437,6 +915,11 @@ index 0000000000000..39bd8606ffbed
 +
 +                                    @Override
 +                                    public void onConnectionFailed() {
++                                        Log.w(
++                                                TAG,
++                                                "fetchKeys: FAILED stage=connect ("
++                                                        + mLastConnectFailureKind
++                                                        + "), returning no keys");
 +                                        op.complete(Collections.emptyList());
 +                                    }
 +                                }));
@@ -1448,13 +931,28 @@ index 0000000000000..39bd8606ffbed
 +     * intent can be produced.
 +     */
 +    Promise<PendingIntent> createKeyRetrievalIntent(final String email) {
-+        final PendingOp<PendingIntent> op = new PendingOp<>(null) {
-+            @Override
-+            void onTimeout() {
-+                Log.w(TAG, "createKeyRetrievalIntent timed out");
-+                completeFromFallbackOrFail(email, this);
-+            }
-+        };
++        Log.i(TAG, "createKeyRetrievalIntent: start");
++        final PendingOp<PendingIntent> op =
++                new PendingOp<PendingIntent>("createKeyRetrievalIntent", null) {
++                    @Override
++                    void onTimeout() {
++                        Log.w(
++                                TAG,
++                                "createKeyRetrievalIntent: FAILED stage=timeout after "
++                                        + elapsedMs()
++                                        + "ms");
++                        completeFromFallbackOrFail(
++                                email,
++                                this,
++                                LumoErrorReporter.Kind.TIMEOUT,
++                                "timed out waiting for the key retrieval service");
++                    }
++
++                    @Override
++                    String describeResult(PendingIntent intent) {
++                        return "retrieval intent available";
++                    }
++                };
 +        runOnMain(
 +                () ->
 +                        ensureConnected(
@@ -1467,7 +965,11 @@ index 0000000000000..39bd8606ffbed
 +
 +                                    @Override
 +                                    public void onConnectionFailed() {
-+                                        completeFromFallbackOrFail(email, op);
++                                        completeFromFallbackOrFail(
++                                                email,
++                                                op,
++                                                mLastConnectFailureKind,
++                                                mLastConnectFailureDetail);
 +                                    }
 +                                }));
 +        return op.promise;
@@ -1475,14 +977,24 @@ index 0000000000000..39bd8606ffbed
 +
 +    /** Marks the locally cached keys for {@code email} as stale. Always fulfills. */
 +    Promise<Boolean> markLocalKeysAsStale(final String email) {
++        Log.i(TAG, "markLocalKeysAsStale: start");
 +        final PendingOp<Boolean> op =
-+                new PendingOp<Boolean>(null) {
++                new PendingOp<Boolean>("markLocalKeysAsStale", null) {
 +                    @Override
 +                    void onTimeout() {
-+                        Log.w(TAG, "markLocalKeysAsStale timed out");
++                        Log.w(
++                                TAG,
++                                "markLocalKeysAsStale: FAILED stage=timeout after "
++                                        + elapsedMs()
++                                        + "ms");
 +                        if (promise.isPending()) {
 +                            promise.fulfill(false);
 +                        }
++                    }
++
++                    @Override
++                    String describeResult(Boolean marked) {
++                        return "marked stale: " + marked;
 +                    }
 +                };
 +        runOnMain(
@@ -1497,6 +1009,11 @@ index 0000000000000..39bd8606ffbed
 +
 +                                    @Override
 +                                    public void onConnectionFailed() {
++                                        Log.w(
++                                                TAG,
++                                                "markLocalKeysAsStale: FAILED stage=connect ("
++                                                        + mLastConnectFailureKind
++                                                        + ")");
 +                                        op.complete(false);
 +                                    }
 +                                }));
@@ -1519,27 +1036,34 @@ index 0000000000000..39bd8606ffbed
 +        try {
 +            service.getKeyMaterial(callback, email, null);
 +        } catch (RemoteException e) {
-+            Log.w(TAG, "getKeyMaterial failed", e);
++            Log.w(TAG, "getKeyMaterial: FAILED stage=service-call, the call threw", e);
 +            op.complete(Collections.emptyList());
 +        }
 +    }
 +
 +    private void handleGetKeyMaterialResult(
 +            PendingOp<List<byte[]>> op, String email, Status status, SharedKey[] keys) {
-+        if (status != null && status.hasResolution()) {
++        int rawKeyCount = keys == null ? -1 : keys.length;
++        boolean hasResolution = status != null && status.hasResolution();
++        String statusDescription =
++                status == null
++                        ? "null"
++                        : status.getStatusCode() + " (" + status.getStatusMessage() + ")";
++        if (hasResolution) {
 +            // Remember the retrieval intent: createKeyRetrievalIntent can fall back to it.
 +            mLastRetrievalIntentAccount = email;
 +            mLastRetrievalIntent = status.getResolution();
 +        }
 +        if (status == null || !status.isSuccess() || keys == null) {
-+            if (status != null) {
-+                Log.w(
-+                        TAG,
-+                        "getKeyMaterial returned status "
-+                                + status.getStatusCode()
-+                                + ": "
-+                                + status.getStatusMessage());
-+            }
++            Log.w(
++                    TAG,
++                    "getKeyMaterial: FAILED stage=service-result status="
++                            + statusDescription
++                            + ", keys="
++                            + rawKeyCount
++                            + ", hasResolution="
++                            + hasResolution
++                            + ", returning no keys");
 +            op.complete(Collections.emptyList());
 +            return;
 +        }
@@ -1555,7 +1079,17 @@ index 0000000000000..39bd8606ffbed
 +        for (SharedKey key : usable) {
 +            result.add(key.keyMaterial);
 +        }
-+        Log.i(TAG, "getKeyMaterial returned " + result.size() + " keys");
++        Log.i(
++                TAG,
++                "getKeyMaterial: OK status="
++                        + statusDescription
++                        + ", keys="
++                        + rawKeyCount
++                        + ", usable="
++                        + result.size()
++                        + ", hasResolution="
++                        + hasResolution
++                        + (result.isEmpty() ? " (no keys registered for the account yet)" : ""));
 +        op.complete(result);
 +    }
 +
@@ -1569,10 +1103,26 @@ index 0000000000000..39bd8606ffbed
 +                                () -> {
 +                                    PendingIntent intent =
 +                                            status != null ? status.getResolution() : null;
++                                    Log.i(
++                                            TAG,
++                                            "startUxFlow returned "
++                                                    + (status == null
++                                                            ? "null status"
++                                                            : "status "
++                                                                    + status.getStatusCode()
++                                                                    + ": "
++                                                                    + status
++                                                                            .getStatusMessage())
++                                                    + ", hasResolution="
++                                                    + (intent != null));
 +                                    if (intent != null) {
 +                                        op.complete(intent);
 +                                    } else {
-+                                        completeFromFallbackOrFail(email, op);
++                                        completeFromFallbackOrFail(
++                                                email,
++                                                op,
++                                                classifyUxFlowFailure(status),
++                                                describeStatus(status));
 +                                    }
 +                                });
 +                    }
@@ -1580,16 +1130,46 @@ index 0000000000000..39bd8606ffbed
 +        try {
 +            service.startUxFlow(callback, email, UX_FLOW_TYPE_KEY_RETRIEVAL, null);
 +        } catch (RemoteException e) {
-+            Log.w(TAG, "startUxFlow failed", e);
-+            completeFromFallbackOrFail(email, op);
++            Log.w(TAG, "startUxFlow: FAILED stage=service-call, the call threw", e);
++            completeFromFallbackOrFail(
++                    email, op, LumoErrorReporter.Kind.SERVICE_ERROR, "startUxFlow call failed");
 +        }
 +    }
 +
-+    private void completeFromFallbackOrFail(String email, PendingOp<PendingIntent> op) {
++    // GMS common status code for "sign-in required": microG returns it (with messages like
++    // "Empty domain") when the account has no keys in the security domain yet.
++    private static final int STATUS_CODE_SIGN_IN_REQUIRED = 4;
++
++    private static LumoErrorReporter.Kind classifyUxFlowFailure(Status status) {
++        if (status == null) return LumoErrorReporter.Kind.SERVICE_ERROR;
++        String message = status.getStatusMessage();
++        if (status.getStatusCode() == STATUS_CODE_SIGN_IN_REQUIRED
++                || (message != null
++                        && (message.contains("Empty domain")
++                                || message.contains("not retrievable")))) {
++            return LumoErrorReporter.Kind.NO_KEYS_YET;
++        }
++        return LumoErrorReporter.Kind.SERVICE_ERROR;
++    }
++
++    private static String describeStatus(Status status) {
++        if (status == null) return "no status returned by the service";
++        return "status " + status.getStatusCode() + ": " + status.getStatusMessage();
++    }
++
++    private void completeFromFallbackOrFail(
++            String email,
++            PendingOp<PendingIntent> op,
++            LumoErrorReporter.Kind kindHint,
++            String detail) {
 +        if (email.equals(mLastRetrievalIntentAccount) && mLastRetrievalIntent != null) {
++            Log.i(TAG, "createKeyRetrievalIntent: using the intent remembered from fetchKeys");
 +            op.complete(mLastRetrievalIntent);
 +        } else {
-+            op.fail(new Exception("No key retrieval intent available"));
++            op.fail(
++                    new TrustedVaultFailureException(
++                            kindHint != null ? kindHint : LumoErrorReporter.Kind.UNKNOWN,
++                            detail != null ? detail : "No key retrieval intent available"));
 +        }
 +    }
 +
@@ -1600,15 +1180,19 @@ index 0000000000000..39bd8606ffbed
 +                    @Override
 +                    public void onResult(final Status status) {
 +                        runOnMain(
-+                                () ->
-+                                        op.complete(
-+                                                status != null && status.isSuccess()));
++                                () -> {
++                                    Log.i(
++                                            TAG,
++                                            "markLocalKeysAsStale: service replied "
++                                                    + describeStatus(status));
++                                    op.complete(status != null && status.isSuccess());
++                                });
 +                    }
 +                };
 +        try {
 +            service.markLocalKeysAsStale(callback, email, null);
 +        } catch (RemoteException e) {
-+            Log.w(TAG, "markLocalKeysAsStale failed", e);
++            Log.w(TAG, "markLocalKeysAsStale: FAILED stage=service-call, the call threw", e);
 +            op.complete(false);
 +        }
 +    }
@@ -1625,20 +1209,49 @@ index 0000000000000..39bd8606ffbed
 +        mConnectionWaiters.add(waiter);
 +        if (mConnecting) return;
 +        mConnecting = true;
++        mProbedPackages.clear();
++        mLastConnectFailureKind = null;
++        mLastConnectFailureDetail = null;
 +        mMainHandler.postDelayed(mConnectWatchdog, TIMEOUT_MS);
-+        tryConnectToPackage(0);
++        tryBindAttempt(0);
 +    }
 +
 +    private final Runnable mConnectWatchdog =
 +            () -> {
 +                if (!mConnecting || mService != null) return;
-+                Log.w(TAG, "Connection attempt timed out");
++                Log.w(
++                        TAG,
++                        "connect: FAILED stage=timeout, the service did not answer in "
++                                + TIMEOUT_MS
++                                + "ms");
++                mLastConnectFailureKind = LumoErrorReporter.Kind.TIMEOUT;
++                mLastConnectFailureDetail = "timed out connecting to the key retrieval service";
++                LumoErrorReporter.reportBackgroundError(LumoErrorReporter.Kind.TIMEOUT);
 +                teardownConnection();
 +                failConnectionWaiters();
 +            };
 +
-+    private void tryConnectToPackage(final int packageIndex) {
-+        if (packageIndex >= GMS_PACKAGES.length) {
++    private void recordConnectFailure(LumoErrorReporter.Kind kind, String detail) {
++        mLastConnectFailureKind = kind;
++        mLastConnectFailureDetail = detail;
++    }
++
++    private void tryBindAttempt(final int attemptIndex) {
++        if (attemptIndex >= mBindAttempts.size()) {
++            LumoErrorReporter.Kind kind =
++                    mLastConnectFailureKind != null
++                            ? mLastConnectFailureKind
++                            : LumoErrorReporter.Kind.SERVICE_UNAVAILABLE;
++            Log.w(
++                    TAG,
++                    "connect: FAILED stage=bind, all "
++                            + mBindAttempts.size()
++                            + " bind attempts failed ("
++                            + kind
++                            + ": "
++                            + mLastConnectFailureDetail
++                            + "); key retrieval service unavailable");
++            LumoErrorReporter.reportBackgroundError(kind);
 +            mConnecting = false;
 +            mMainHandler.removeCallbacks(mConnectWatchdog);
 +            failConnectionWaiters();
@@ -1647,14 +1260,23 @@ index 0000000000000..39bd8606ffbed
 +        // Abandon any previous attempt: unbind it and invalidate its callbacks.
 +        unbindBrokerConnection();
 +        final int generation = ++mConnectGeneration;
++        final BindAttempt attempt = mBindAttempts.get(attemptIndex);
++        logProbeOnce(attempt);
++        Log.i(
++                TAG,
++                "Bind attempt "
++                        + (attemptIndex + 1)
++                        + "/"
++                        + mBindAttempts.size()
++                        + ": "
++                        + attempt.description);
 +        final Context context = ContextUtils.getApplicationContext();
-+        Intent intent = new Intent(ACTION_KEY_RETRIEVAL).setPackage(GMS_PACKAGES[packageIndex]);
 +        ServiceConnection connection =
 +                new ServiceConnection() {
 +                    @Override
 +                    public void onServiceConnected(ComponentName name, IBinder binder) {
 +                        if (generation != mConnectGeneration) return;
-+                        startBrokerHandshake(packageIndex, generation, binder);
++                        startBrokerHandshake(attemptIndex, generation, binder);
 +                    }
 +
 +                    @Override
@@ -1665,14 +1287,55 @@ index 0000000000000..39bd8606ffbed
 +        mBrokerConnection = connection;
 +        boolean accepted = false;
 +        try {
-+            accepted = context.bindService(intent, connection, Context.BIND_AUTO_CREATE);
++            accepted =
++                    context.bindService(attempt.intent, connection, Context.BIND_AUTO_CREATE);
 +        } catch (Exception e) {
-+            Log.w(TAG, "bindService failed for " + GMS_PACKAGES[packageIndex], e);
++            Log.w(TAG, "bindService threw for " + attempt.description, e);
++            recordConnectFailure(
++                    LumoErrorReporter.Kind.SERVICE_UNAVAILABLE,
++                    "bindService threw for " + attempt.description);
 +        }
 +        if (!accepted) {
++            Log.w(TAG, "bindService returned false for " + attempt.description);
++            recordConnectFailure(
++                    LumoErrorReporter.Kind.SERVICE_UNAVAILABLE,
++                    "bindService returned false for " + attempt.description);
 +            mBrokerConnection = null;
-+            tryConnectToPackage(packageIndex + 1);
++            tryBindAttempt(attemptIndex + 1);
 +        }
++    }
++
++    /**
++     * Logs, once per connection sequence and package, what the package manager can see of
++     * the target package: the installed version, and whether this attempt's intent resolves
++     * to a service. This is what distinguishes "service not present" from "present but not
++     * resolvable under the name we used" in logcat.
++     */
++    private void logProbeOnce(BindAttempt attempt) {
++        String pkg = attempt.packageName();
++        if (pkg == null || !mProbedPackages.add(pkg)) return;
++        PackageManager pm = ContextUtils.getApplicationContext().getPackageManager();
++        String version;
++        try {
++            version = String.valueOf(pm.getPackageInfo(pkg, 0).versionName);
++        } catch (PackageManager.NameNotFoundException e) {
++            version = "not installed";
++        }
++        ResolveInfo resolved = pm.resolveService(attempt.intent, 0);
++        Log.i(
++                TAG,
++                "Probe "
++                        + pkg
++                        + " (version "
++                        + version
++                        + "): resolveService for "
++                        + attempt.description
++                        + " -> "
++                        + (resolved != null && resolved.serviceInfo != null
++                                ? resolved.serviceInfo.packageName
++                                        + "/"
++                                        + resolved.serviceInfo.name
++                                : "null"));
 +    }
 +
 +    private void unbindBrokerConnection() {
@@ -1687,10 +1350,13 @@ index 0000000000000..39bd8606ffbed
 +    }
 +
 +    private void startBrokerHandshake(
-+            final int packageIndex, final int generation, IBinder brokerBinder) {
++            final int attemptIndex, final int generation, IBinder brokerBinder) {
 +        IGmsServiceBroker broker = IGmsServiceBroker.Stub.asInterface(brokerBinder);
 +        if (broker == null) {
-+            tryConnectToPackage(packageIndex + 1);
++            Log.w(TAG, "connect: FAILED stage=handshake, the bound binder is not a GMS broker");
++            recordConnectFailure(
++                    LumoErrorReporter.Kind.SERVICE_ERROR, "bound binder is not a GMS broker");
++            tryBindAttempt(attemptIndex + 1);
 +            return;
 +        }
 +        Context context = ContextUtils.getApplicationContext();
@@ -1708,7 +1374,7 @@ index 0000000000000..39bd8606ffbed
 +                            runOnMain(
 +                                    () -> {
 +                                        if (generation != mConnectGeneration) return;
-+                                        handleHandshakeResult(packageIndex, statusCode, binder);
++                                        handleHandshakeResult(attemptIndex, statusCode, binder);
 +                                    });
 +                        }
 +
@@ -1723,32 +1389,50 @@ index 0000000000000..39bd8606ffbed
 +                            runOnMain(
 +                                    () -> {
 +                                        if (generation != mConnectGeneration) return;
-+                                        handleHandshakeResult(packageIndex, statusCode, binder);
++                                        handleHandshakeResult(attemptIndex, statusCode, binder);
 +                                    });
 +                        }
 +                    },
 +                    request);
 +        } catch (RemoteException e) {
-+            Log.w(TAG, "Broker handshake failed", e);
-+            tryConnectToPackage(packageIndex + 1);
++            Log.w(TAG, "connect: FAILED stage=handshake, the getService call threw", e);
++            recordConnectFailure(
++                    LumoErrorReporter.Kind.SERVICE_ERROR, "broker getService call failed");
++            tryBindAttempt(attemptIndex + 1);
 +        }
 +    }
 +
-+    private void handleHandshakeResult(int packageIndex, int statusCode, IBinder binder) {
++    private void handleHandshakeResult(int attemptIndex, int statusCode, IBinder binder) {
 +        if (!mConnecting) {
 +            // Stale callback (e.g. after the watchdog tore the attempt down).
 +            return;
 +        }
 +        if (statusCode != 0 || binder == null) {
-+            Log.w(TAG, "Broker handshake refused with status " + statusCode);
-+            tryConnectToPackage(packageIndex + 1);
++            Log.w(
++                    TAG,
++                    "connect: FAILED stage=handshake, broker refused with status " + statusCode);
++            recordConnectFailure(
++                    LumoErrorReporter.Kind.HANDSHAKE_REFUSED,
++                    "broker handshake refused with status " + statusCode);
++            tryBindAttempt(attemptIndex + 1);
 +            return;
 +        }
 +        IKeyRetrievalService service = IKeyRetrievalService.Stub.asInterface(binder);
 +        if (service == null) {
-+            tryConnectToPackage(packageIndex + 1);
++            Log.w(
++                    TAG,
++                    "connect: FAILED stage=handshake, the returned binder is not a key"
++                            + " retrieval service");
++            recordConnectFailure(
++                    LumoErrorReporter.Kind.SERVICE_ERROR,
++                    "handshake returned an unusable service binder");
++            tryBindAttempt(attemptIndex + 1);
 +            return;
 +        }
++        Log.i(
++                TAG,
++                "Connected to Folsom key retrieval service via "
++                        + mBindAttempts.get(attemptIndex).description);
 +        mService = service;
 +        mServiceBinder = binder;
 +        mConnecting = false;
@@ -1799,7 +1483,7 @@ index 0000000000000..39bd8606ffbed
 +}
 diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomSafeParcel.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomSafeParcel.java
 new file mode 100644
-index 0000000000000..b313af6089c3f
+index 0000000..b313af6
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/FolsomSafeParcel.java
 @@ -0,0 +1,234 @@
@@ -2037,12 +1721,224 @@ index 0000000000000..b313af6089c3f
 +        parcel.setDataPosition(parcel.dataPosition() + size);
 +    }
 +}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/LumoErrorReporter.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/LumoErrorReporter.java
+new file mode 100644
+index 0000000..160066f
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/LumoErrorReporter.java
+@@ -0,0 +1,206 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.components.trusted_vault;
++
++import android.app.Activity;
++import android.app.AlertDialog;
++import android.content.Context;
++import android.content.ContextWrapper;
++import android.os.Handler;
++import android.os.Looper;
++import android.util.Log;
++
++import java.util.EnumSet;
++import java.util.Set;
++
++/**
++ * On-screen error reporting for Lumo-added features.
++ *
++ * <p>Several Lumo additions talk to external components (notably the microG "Folsom" key
++ * retrieval service behind the trusted vault backend) whose failures used to be visible only
++ * in logcat: the user tapped something, nothing happened, and there was no way to tell why.
++ * This reporter turns such failures into a dialog with a plain-language Japanese explanation
++ * of what went wrong and what to check.
++ *
++ * <p>Two entry points:
++ *
++ * <ul>
++ *   <li>{@link #showError} for failures of a user-initiated action, shown immediately.
++ *   <li>{@link #reportBackgroundError} for failures that happen in the background (e.g. a
++ *       periodic key fetch). They are recorded and surfaced once, via {@link
++ *       #showPendingIfAny}, the next time the user is on a screen that can show a dialog.
++ * </ul>
++ *
++ * <p>Duplicates are suppressed: the same {@link Kind} of background error is shown at most
++ * once per process run, and a second dialog is never stacked on top of one already showing.
++ * Nothing about keys or other secrets is ever put into a dialog; the optional detail line is
++ * for service status text only (e.g. a status code and message from microG).
++ *
++ * <p>All state is confined to the main thread; calls from other threads are posted to it.
++ */
++public final class LumoErrorReporter {
++    private static final String TAG = "LumoErrorReporter";
++
++    /** What went wrong, in terms a user-facing explanation can be picked from. */
++    public enum Kind {
++        /** The service could not be reached at all (not installed, bind refused, not found). */
++        SERVICE_UNAVAILABLE,
++        /** The service broker refused the handshake (non-zero status). */
++        HANDSHAKE_REFUSED,
++        /** The service did not answer in time. */
++        TIMEOUT,
++        /** The service is reachable but holds no keys for the account yet. */
++        NO_KEYS_YET,
++        /** The service answered with an error status. */
++        SERVICE_ERROR,
++        /** Anything else. */
++        UNKNOWN
++    }
++
++    private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
++
++    // Main-thread confined.
++    private static final Set<Kind> sPendingKinds = EnumSet.noneOf(Kind.class);
++    private static final Set<Kind> sShownBackgroundKinds = EnumSet.noneOf(Kind.class);
++    private static boolean sDialogShowing;
++
++    private LumoErrorReporter() {}
++
++    /**
++     * Records a failure that happened without user interaction. It is shown once, the next
++     * time {@link #showPendingIfAny} is called with a usable context.
++     */
++    public static void reportBackgroundError(final Kind kind) {
++        runOnMain(
++                () -> {
++                    if (kind == null || sShownBackgroundKinds.contains(kind)) return;
++                    if (sPendingKinds.add(kind)) {
++                        Log.i(TAG, "Recorded background error: " + kind);
++                    }
++                });
++    }
++
++    /**
++     * Shows the oldest recorded background error, if any and if {@code context} can host a
++     * dialog. Returns whether a dialog was shown.
++     */
++    public static boolean showPendingIfAny(final Context context) {
++        if (!isOnMainThread()) {
++            sMainHandler.post(() -> showPendingIfAny(context));
++            return false;
++        }
++        if (context == null || sPendingKinds.isEmpty()) return false;
++        Kind kind = sPendingKinds.iterator().next();
++        sPendingKinds.remove(kind);
++        sShownBackgroundKinds.add(kind);
++        return showDialog(context, kind, null, /* background= */ true);
++    }
++
++    /**
++     * Shows an error dialog for a user-initiated action that just failed. {@code detail} is
++     * an optional one-line technical detail (service status text); never pass secrets.
++     */
++    public static void showError(final Context context, final Kind kind, final String detail) {
++        runOnMain(
++                () -> {
++                    if (context == null || kind == null) return;
++                    // If this kind was already surfaced as a background error, the user has
++                    // seen the explanation; do not repeat it for the same failure.
++                    showDialog(context, kind, detail, /* background= */ false);
++                });
++    }
++
++    private static boolean showDialog(
++            Context context, Kind kind, String detail, boolean background) {
++        if (sDialogShowing) {
++            Log.i(TAG, "Dialog already showing; skipping error dialog for " + kind);
++            return false;
++        }
++        Activity activity = findActivity(context);
++        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
++            Log.w(TAG, "No usable activity to show error dialog for " + kind);
++            return false;
++        }
++        StringBuilder message = new StringBuilder(messageFor(kind, background));
++        if (detail != null && !detail.isEmpty()) {
++            message.append("\n\n詳細: ").append(detail);
++        }
++        sDialogShowing = true;
++        try {
++            AlertDialog dialog =
++                    new AlertDialog.Builder(activity)
++                            .setTitle(titleFor(kind, background))
++                            .setMessage(message.toString())
++                            .setPositiveButton("OK", (d, which) -> d.dismiss())
++                            .create();
++            dialog.setOnDismissListener(d -> sDialogShowing = false);
++            dialog.show();
++            Log.i(TAG, "Showed error dialog for " + kind);
++            return true;
++        } catch (Exception e) {
++            sDialogShowing = false;
++            Log.w(TAG, "Failed to show error dialog for " + kind, e);
++            return false;
++        }
++    }
++
++    private static Activity findActivity(Context context) {
++        Context current = context;
++        while (current instanceof ContextWrapper) {
++            if (current instanceof Activity) return (Activity) current;
++            current = ((ContextWrapper) current).getBaseContext();
++        }
++        return current instanceof Activity ? (Activity) current : null;
++    }
++
++    private static String titleFor(Kind kind, boolean background) {
++        if (background) return "パスワード同期の鍵を取得できませんでした";
++        return kind == Kind.NO_KEYS_YET
++                ? "同期用の鍵がまだ登録されていません"
++                : "本人確認を開始できませんでした";
++    }
++
++    private static String messageFor(Kind kind, boolean background) {
++        switch (kind) {
++            case SERVICE_UNAVAILABLE:
++                return background
++                        ? "MicroG の鍵取得サービスに接続できなかったため、パスワード同期が止まっています。"
++                                + "MicroG がインストールされているか確認してください。"
++                        : "MicroG の鍵取得サービスに接続できませんでした。"
++                                + "MicroG がインストールされているか、最新版かを確認してください。";
++            case HANDSHAKE_REFUSED:
++                return background
++                        ? "MicroG の鍵取得サービスが接続を受け付けなかったため、パスワード同期が止まっています。"
++                        : "MicroG の鍵取得サービスが接続を受け付けませんでした。"
++                                + "MicroG の状態を確認して、もう一度試してください。";
++            case TIMEOUT:
++                return background
++                        ? "MicroG の鍵取得サービスから応答がなかったため、パスワード同期が止まっています。"
++                        : "MicroG の鍵取得サービスから応答がありませんでした。"
++                                + "しばらく待ってから、もう一度試してください。";
++            case NO_KEYS_YET:
++                return "この端末には、パスワード同期用の鍵がまだ登録されていません。"
++                        + "MicroG 側で本人確認（鍵の登録）を完了してから、もう一度試してください。";
++            case SERVICE_ERROR:
++                return "MicroG の鍵取得サービスでエラーが発生しました。"
++                        + "MicroG の状態を確認して、もう一度試してください。";
++            case UNKNOWN:
++            default:
++                return "予期しないエラーが発生しました。もう一度試してください。";
++        }
++    }
++
++    private static boolean isOnMainThread() {
++        return Looper.myLooper() == Looper.getMainLooper();
++    }
++
++    private static void runOnMain(Runnable runnable) {
++        if (isOnMainThread()) {
++            runnable.run();
++        } else {
++            sMainHandler.post(runnable);
++        }
++    }
++}
 diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/MicroGTrustedVaultBackend.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/MicroGTrustedVaultBackend.java
 new file mode 100644
-index 0000000000000..6bc9ec263fe96
+index 0000000..17af87c
 --- /dev/null
 +++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/MicroGTrustedVaultBackend.java
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,93 @@
 +// Copyright 2025 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -2050,6 +1946,7 @@ index 0000000000000..6bc9ec263fe96
 +package org.chromium.components.trusted_vault;
 +
 +import android.app.PendingIntent;
++import android.util.Log;
 +
 +import org.chromium.base.Promise;
 +import org.chromium.components.signin.base.CoreAccountInfo;
@@ -2063,15 +1960,22 @@ index 0000000000000..6bc9ec263fe96
 + * delegated to {@link FolsomClient}; operations that would write to the security domain
 + * (adding recovery methods, opt-in and recoverability-degraded flows) stay disabled, as in
 + * the original stub.
++ *
++ * <p>Every entry point logs that it was called (never with the account email itself) so a
++ * logcat capture shows whether a failure happened in this backend or downstream in {@link
++ * FolsomClient}, whose tag carries the detailed outcome of each operation.
 + */
 +public class MicroGTrustedVaultBackend implements TrustedVaultClient.Backend {
++    private static final String TAG = "MicroGTrustedVaultBackend";
 +
 +    @Override
 +    public Promise<List<byte[]>> fetchKeys(CoreAccountInfo accountInfo) {
 +        String email = accountInfo != null ? accountInfo.getEmail() : null;
 +        if (email == null || email.isEmpty()) {
++            Log.w(TAG, "fetchKeys: no account email, returning no keys");
 +            return Promise.fulfilled(Collections.emptyList());
 +        }
++        Log.i(TAG, "fetchKeys: delegating to the Folsom key retrieval service");
 +        return FolsomClient.getInstance().fetchKeys(email);
 +    }
 +
@@ -2079,8 +1983,10 @@ index 0000000000000..6bc9ec263fe96
 +    public Promise<PendingIntent> createKeyRetrievalIntent(CoreAccountInfo accountInfo) {
 +        String email = accountInfo != null ? accountInfo.getEmail() : null;
 +        if (email == null || email.isEmpty()) {
++            Log.w(TAG, "createKeyRetrievalIntent: no account email, rejecting");
 +            return Promise.rejected();
 +        }
++        Log.i(TAG, "createKeyRetrievalIntent: delegating to the Folsom key retrieval service");
 +        return FolsomClient.getInstance().createKeyRetrievalIntent(email);
 +    }
 +
@@ -2088,8 +1994,10 @@ index 0000000000000..6bc9ec263fe96
 +    public Promise<Boolean> markLocalKeysAsStale(CoreAccountInfo accountInfo) {
 +        String email = accountInfo != null ? accountInfo.getEmail() : null;
 +        if (email == null || email.isEmpty()) {
++            Log.w(TAG, "markLocalKeysAsStale: no account email, returning false");
 +            return Promise.fulfilled(false);
 +        }
++        Log.i(TAG, "markLocalKeysAsStale: delegating to the Folsom key retrieval service");
 +        return FolsomClient.getInstance().markLocalKeysAsStale(email);
 +    }
 +
@@ -2097,6 +2005,7 @@ index 0000000000000..6bc9ec263fe96
 +    public Promise<Boolean> getIsRecoverabilityDegraded(CoreAccountInfo accountInfo) {
 +        // No Folsom API with a confirmed mapping to recoverability degradation is used yet;
 +        // this is called frequently and a wrong positive would surface recovery UI in error.
++        // (Deliberately not logged: it is called too often and always answers false.)
 +        return Promise.fulfilled(false);
 +    }
 +
@@ -2104,21 +2013,27 @@ index 0000000000000..6bc9ec263fe96
 +    public Promise<Void> addTrustedRecoveryMethod(
 +            CoreAccountInfo accountInfo, byte[] publicKey, int methodTypeHint) {
 +        // Write operations against the security domain stay disabled.
++        Log.i(TAG, "addTrustedRecoveryMethod: disabled in the microG backend, rejecting");
 +        return Promise.rejected();
 +    }
 +
 +    @Override
 +    public Promise<PendingIntent> createRecoverabilityDegradedIntent(CoreAccountInfo accountInfo) {
++        Log.i(
++                TAG,
++                "createRecoverabilityDegradedIntent: disabled in the microG backend,"
++                        + " rejecting");
 +        return Promise.rejected();
 +    }
 +
 +    @Override
 +    public Promise<PendingIntent> createOptInIntent(CoreAccountInfo accountInfo) {
++        Log.i(TAG, "createOptInIntent: disabled in the microG backend, rejecting");
 +        return Promise.rejected();
 +    }
 +}
 diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultClient.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultClient.java
-index 9adf5d9e6fa5a..98980ca806b16 100644
+index ad05249..449bd88 100644
 --- a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultClient.java
 +++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultClient.java
 @@ -168,11 +168,7 @@ public class TrustedVaultClient {
@@ -2134,3 +2049,748 @@ index 9adf5d9e6fa5a..98980ca806b16 100644
              sInstance = new TrustedVaultClient(backend);
          }
          return sInstance;
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultFailureException.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultFailureException.java
+new file mode 100644
+index 0000000..a2ecf03
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/TrustedVaultFailureException.java
+@@ -0,0 +1,30 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.components.trusted_vault;
++
++/**
++ * Failure of a trusted vault backend operation, classified so the UI layer can explain it
++ * to the user via {@link LumoErrorReporter} instead of only logging it. The {@link
++ * #getDetail() detail} is a one-line technical description (e.g. a service status code and
++ * message) and must never contain key material or other secrets.
++ */
++public class TrustedVaultFailureException extends Exception {
++    private final LumoErrorReporter.Kind mKind;
++    private final String mDetail;
++
++    public TrustedVaultFailureException(LumoErrorReporter.Kind kind, String detail) {
++        super(detail);
++        mKind = kind != null ? kind : LumoErrorReporter.Kind.UNKNOWN;
++        mDetail = detail;
++    }
++
++    public LumoErrorReporter.Kind getKind() {
++        return mKind;
++    }
++
++    public String getDetail() {
++        return mDetail;
++    }
++}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ApiMetadata.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ApiMetadata.java
+new file mode 100644
+index 0000000..2936711
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ApiMetadata.java
+@@ -0,0 +1,66 @@
++/*
++ * SPDX-FileCopyrightText: 2025 microG Project Team
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Minimal stand-in for the SafeParcelable of the same name in microG GmsCore
++ * (play-services-basement). The trusted vault backend always passes null
++ * metadata to the Folsom service (microG accepts null), so this class is
++ * only ever a compile-time type and is never written to a Parcel by this
++ * client; the write path below mirrors microG's layout (a magic int
++ * followed by an empty SafeParcel object) so that a non-null value would
++ * still parse on the service side. Field numbers are part of the protocol
++ * and must not change: 1 = compliance options, 2 = boolean.
++ *
++ * This class lives in org.chromium.components.trusted_vault.gms instead of
++ * com.google.android.gms.common.api because the Play services basement jar
++ * already ships an ApiMetadata under that name and R8 rejects the duplicate
++ * class at dex time. Only the Java package changed; the wire format above
++ * is untouched.
++ */
++
++package org.chromium.components.trusted_vault.gms;
++
++import android.os.Parcel;
++import android.os.Parcelable;
++
++import org.chromium.components.trusted_vault.FolsomSafeParcel;
++
++/** Optional metadata attached to a Folsom service call; always null in practice. */
++public class ApiMetadata implements Parcelable {
++    // Magic written by microG before the object; the reader checks for it first.
++    private static final int METADATA_PRESENT_MAGIC = -204102970;
++
++    public ApiMetadata() {}
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    @Override
++    public void writeToParcel(Parcel dest, int flags) {
++        dest.writeInt(METADATA_PRESENT_MAGIC);
++        int start = FolsomSafeParcel.beginObject(dest);
++        FolsomSafeParcel.finishObject(dest, start);
++    }
++
++    public static final Creator<ApiMetadata> CREATOR =
++            new Creator<ApiMetadata>() {
++                @Override
++                public ApiMetadata createFromParcel(Parcel source) {
++                    int startPosition = source.dataPosition();
++                    if (source.readInt() != METADATA_PRESENT_MAGIC) {
++                        source.setDataPosition(startPosition);
++                        return new ApiMetadata();
++                    }
++                    int end = FolsomSafeParcel.readObjectEnd(source);
++                    source.setDataPosition(end);
++                    return new ApiMetadata();
++                }
++
++                @Override
++                public ApiMetadata[] newArray(int size) {
++                    return new ApiMetadata[size];
++                }
++            };
++}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ConnectionInfo.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ConnectionInfo.java
+new file mode 100644
+index 0000000..68aed48
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/ConnectionInfo.java
+@@ -0,0 +1,79 @@
++/*
++ * SPDX-FileCopyrightText: 2025 microG Project Team
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Hand-written from the SafeParcelable definition of the same name in microG
++ * GmsCore (play-services-basement) so the trusted vault backend can receive
++ * the GMS broker handshake result from microG without the Play services SDK.
++ * Field numbers and the wire format are part of the protocol and must not
++ * change: 1 = params (Bundle), 2 = features (Feature[], not modelled by this
++ * client; skipped when reading), 3 = int.
++ *
++ * This class lives in org.chromium.components.trusted_vault.gms instead of
++ * com.google.android.gms.common.internal because the Play services basement
++ * jar already ships a ConnectionInfo under that name and R8 rejects the
++ * duplicate class at dex time. Only the Java package changed; the wire
++ * format above is untouched.
++ */
++
++package org.chromium.components.trusted_vault.gms;
++
++import android.os.Bundle;
++import android.os.Parcel;
++import android.os.Parcelable;
++
++import org.chromium.components.trusted_vault.FolsomSafeParcel;
++
++public class ConnectionInfo implements Parcelable {
++    public Bundle params;
++    public int unknown3;
++
++    public ConnectionInfo() {}
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    @Override
++    public void writeToParcel(Parcel dest, int flags) {
++        int start = FolsomSafeParcel.beginObject(dest);
++        FolsomSafeParcel.writeBundle(dest, 1, params, false);
++        FolsomSafeParcel.writeInt(dest, 3, unknown3);
++        FolsomSafeParcel.finishObject(dest, start);
++    }
++
++    public static final Creator<ConnectionInfo> CREATOR =
++            new Creator<ConnectionInfo>() {
++                @Override
++                public ConnectionInfo createFromParcel(Parcel source) {
++                    int end = FolsomSafeParcel.readObjectEnd(source);
++                    ConnectionInfo result = new ConnectionInfo();
++                    while (source.dataPosition() < end) {
++                        int header = source.readInt();
++                        switch (FolsomSafeParcel.getFieldId(header)) {
++                            case 1:
++                                result.params =
++                                        FolsomSafeParcel.readBundle(
++                                                source,
++                                                header,
++                                                ConnectionInfo.class.getClassLoader());
++                                break;
++                            case 3:
++                                result.unknown3 = FolsomSafeParcel.readInt(source, header);
++                                break;
++                            default:
++                                FolsomSafeParcel.skip(source, header);
++                                break;
++                        }
++                    }
++                    source.setDataPosition(end);
++                    return result;
++                }
++
++                @Override
++                public ConnectionInfo[] newArray(int size) {
++                    return new ConnectionInfo[size];
++                }
++            };
++}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java
+new file mode 100644
+index 0000000..65d772b
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/GetServiceRequest.java
+@@ -0,0 +1,111 @@
++/*
++ * SPDX-FileCopyrightText: 2025 microG Project Team
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Hand-written from the SafeParcelable definition of the same name in microG
++ * GmsCore (play-services-basement) so the trusted vault backend can perform
++ * the GMS broker handshake with microG without the Play services SDK. Field
++ * numbers and the wire format are part of the protocol and must not change:
++ * 1 = version code (int), 2 = service id (int), 3 = GMS version (int),
++ * 4 = package name (String), 5 = account accessor (binder), 6 = scopes,
++ * 7 = extras (Bundle), 8 = account, 9 = (deprecated long), 10/11 = features,
++ * 12 = supports connection info (boolean), 13 = int, 14 = boolean,
++ * 15 = attribution tag (String). This client only sets the fields the Folsom
++ * handshake needs; the rest are written with their default values or omitted
++ * (absent reference fields read back as null on the service side).
++ *
++ * This class lives in org.chromium.components.trusted_vault.gms instead of
++ * com.google.android.gms.common.internal because the Play services basement
++ * jar already ships a GetServiceRequest under that name and R8 rejects the
++ * duplicate class at dex time. The real basement class cannot be used here:
++ * it has no public constructor and no public packageName/extras fields, so
++ * the handshake request cannot be built with it. Only the Java package
++ * changed; the wire format above is untouched.
++ */
++
++package org.chromium.components.trusted_vault.gms;
++
++import android.os.Bundle;
++import android.os.Parcel;
++import android.os.Parcelable;
++
++import org.chromium.components.trusted_vault.FolsomSafeParcel;
++
++public class GetServiceRequest implements Parcelable {
++    private static final int VERSION_CODE = 6;
++    // GMS version code of the microG generation this client targets. The broker
++    // does not branch on this value for the Folsom service.
++    private static final int GMS_VERSION_CODE = 252432000;
++
++    public int serviceId;
++    public String packageName;
++    public Bundle extras;
++    public boolean supportsConnectionInfo = true;
++
++    public GetServiceRequest(int serviceId) {
++        this.serviceId = serviceId;
++    }
++
++    private GetServiceRequest() {}
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    @Override
++    public void writeToParcel(Parcel dest, int flags) {
++        int start = FolsomSafeParcel.beginObject(dest);
++        FolsomSafeParcel.writeInt(dest, 1, VERSION_CODE);
++        FolsomSafeParcel.writeInt(dest, 2, serviceId);
++        FolsomSafeParcel.writeInt(dest, 3, GMS_VERSION_CODE);
++        FolsomSafeParcel.writeString(dest, 4, packageName, false);
++        FolsomSafeParcel.writeBundle(dest, 7, extras, false);
++        FolsomSafeParcel.writeLong(dest, 9, 0);
++        FolsomSafeParcel.writeBoolean(dest, 12, supportsConnectionInfo);
++        FolsomSafeParcel.writeInt(dest, 13, 0);
++        FolsomSafeParcel.writeBoolean(dest, 14, false);
++        FolsomSafeParcel.finishObject(dest, start);
++    }
++
++    public static final Creator<GetServiceRequest> CREATOR =
++            new Creator<GetServiceRequest>() {
++                @Override
++                public GetServiceRequest createFromParcel(Parcel source) {
++                    int end = FolsomSafeParcel.readObjectEnd(source);
++                    GetServiceRequest result = new GetServiceRequest();
++                    while (source.dataPosition() < end) {
++                        int header = source.readInt();
++                        switch (FolsomSafeParcel.getFieldId(header)) {
++                            case 2:
++                                result.serviceId = FolsomSafeParcel.readInt(source, header);
++                                break;
++                            case 4:
++                                result.packageName = FolsomSafeParcel.readString(source, header);
++                                break;
++                            case 7:
++                                result.extras =
++                                        FolsomSafeParcel.readBundle(
++                                                source,
++                                                header,
++                                                GetServiceRequest.class.getClassLoader());
++                                break;
++                            case 12:
++                                result.supportsConnectionInfo =
++                                        FolsomSafeParcel.readBoolean(source, header);
++                                break;
++                            default:
++                                FolsomSafeParcel.skip(source, header);
++                                break;
++                        }
++                    }
++                    source.setDataPosition(end);
++                    return result;
++                }
++
++                @Override
++                public GetServiceRequest[] newArray(int size) {
++                    return new GetServiceRequest[size];
++                }
++            };
++}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java
+new file mode 100644
+index 0000000..20d450f
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsCallbacks.java
+@@ -0,0 +1,199 @@
++/*
++ * SPDX-FileCopyrightText: 2025 microG Project Team
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Hand-written in the style of AIDL-generated code from the interface
++ * definition of the same name in microG GmsCore (play-services-basement) so
++ * the trusted vault backend can complete the GMS broker handshake with
++ * microG without the Play services SDK. The interface descriptor and
++ * transaction numbers are part of the protocol and must not change.
++ *
++ * This interface lives in org.chromium.components.trusted_vault.gms instead
++ * of com.google.android.gms.common.internal because the Play services
++ * basement jar already ships an IGmsCallbacks under that name and R8
++ * rejects the duplicate class at dex time. The real basement interface
++ * cannot be used here: it has no Stub and its methods are obfuscated
++ * (zzb/zzc), so the handshake callbacks cannot be implemented against it.
++ * Only the Java package changed; the descriptor string and transaction
++ * numbers above are untouched.
++ */
++
++package org.chromium.components.trusted_vault.gms;
++
++import android.os.Binder;
++import android.os.Bundle;
++import android.os.IBinder;
++import android.os.IInterface;
++import android.os.Parcel;
++import android.os.RemoteException;
++
++import org.chromium.components.trusted_vault.gms.ConnectionInfo;
++
++public interface IGmsCallbacks extends IInterface {
++    void onPostInitComplete(int statusCode, IBinder binder, Bundle params) throws RemoteException;
++
++    void onAccountValidationComplete(int statusCode, Bundle params) throws RemoteException;
++
++    void onPostInitCompleteWithConnectionInfo(int statusCode, IBinder binder, ConnectionInfo info)
++            throws RemoteException;
++
++    abstract class Stub extends Binder implements IGmsCallbacks {
++        private static final String DESCRIPTOR = "com.google.android.gms.common.internal.IGmsCallbacks";
++
++        static final int TRANSACTION_onPostInitComplete = IBinder.FIRST_CALL_TRANSACTION;
++        static final int TRANSACTION_onAccountValidationComplete =
++                IBinder.FIRST_CALL_TRANSACTION + 1;
++        static final int TRANSACTION_onPostInitCompleteWithConnectionInfo =
++                IBinder.FIRST_CALL_TRANSACTION + 2;
++
++        public Stub() {
++            attachInterface(this, DESCRIPTOR);
++        }
++
++        public static IGmsCallbacks asInterface(IBinder binder) {
++            if (binder == null) {
++                return null;
++            }
++            IInterface local = binder.queryLocalInterface(DESCRIPTOR);
++            if (local instanceof IGmsCallbacks) {
++                return (IGmsCallbacks) local;
++            }
++            return new Proxy(binder);
++        }
++
++        @Override
++        public IBinder asBinder() {
++            return this;
++        }
++
++        @Override
++        public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
++                throws RemoteException {
++            switch (code) {
++                case IBinder.INTERFACE_TRANSACTION: {
++                    reply.writeString(DESCRIPTOR);
++                    return true;
++                }
++                case TRANSACTION_onPostInitComplete: {
++                    data.enforceInterface(DESCRIPTOR);
++                    int statusCode = data.readInt();
++                    IBinder binder = data.readStrongBinder();
++                    // The bundle argument is not used by this client; read it defensively so a
++                    // malformed or absent bundle cannot break the handshake.
++                    Bundle params = null;
++                    if (data.dataAvail() > 0) {
++                        try {
++                            params = data.readBundle(IGmsCallbacks.class.getClassLoader());
++                        } catch (Exception ignored) {
++                            params = null;
++                        }
++                    }
++                    onPostInitComplete(statusCode, binder, params);
++                    reply.writeNoException();
++                    return true;
++                }
++                case TRANSACTION_onAccountValidationComplete: {
++                    data.enforceInterface(DESCRIPTOR);
++                    int statusCode = data.readInt();
++                    Bundle params = null;
++                    if (data.dataAvail() > 0) {
++                        try {
++                            params = data.readBundle(IGmsCallbacks.class.getClassLoader());
++                        } catch (Exception ignored) {
++                            params = null;
++                        }
++                    }
++                    onAccountValidationComplete(statusCode, params);
++                    reply.writeNoException();
++                    return true;
++                }
++                case TRANSACTION_onPostInitCompleteWithConnectionInfo: {
++                    data.enforceInterface(DESCRIPTOR);
++                    int statusCode = data.readInt();
++                    IBinder binder = data.readStrongBinder();
++                    ConnectionInfo info =
++                            data.readInt() != 0
++                                    ? ConnectionInfo.CREATOR.createFromParcel(data)
++                                    : null;
++                    onPostInitCompleteWithConnectionInfo(statusCode, binder, info);
++                    reply.writeNoException();
++                    return true;
++                }
++                default:
++                    return super.onTransact(code, data, reply, flags);
++            }
++        }
++
++        private static class Proxy implements IGmsCallbacks {
++            private final IBinder mRemote;
++
++            Proxy(IBinder remote) {
++                mRemote = remote;
++            }
++
++            @Override
++            public IBinder asBinder() {
++                return mRemote;
++            }
++
++            @Override
++            public void onPostInitComplete(int statusCode, IBinder binder, Bundle params)
++                    throws RemoteException {
++                Parcel data = Parcel.obtain();
++                Parcel reply = Parcel.obtain();
++                try {
++                    data.writeInterfaceToken(DESCRIPTOR);
++                    data.writeInt(statusCode);
++                    data.writeStrongBinder(binder);
++                    data.writeBundle(params);
++                    mRemote.transact(TRANSACTION_onPostInitComplete, data, reply, 0);
++                    reply.readException();
++                } finally {
++                    reply.recycle();
++                    data.recycle();
++                }
++            }
++
++            @Override
++            public void onAccountValidationComplete(int statusCode, Bundle params)
++                    throws RemoteException {
++                Parcel data = Parcel.obtain();
++                Parcel reply = Parcel.obtain();
++                try {
++                    data.writeInterfaceToken(DESCRIPTOR);
++                    data.writeInt(statusCode);
++                    data.writeBundle(params);
++                    mRemote.transact(TRANSACTION_onAccountValidationComplete, data, reply, 0);
++                    reply.readException();
++                } finally {
++                    reply.recycle();
++                    data.recycle();
++                }
++            }
++
++            @Override
++            public void onPostInitCompleteWithConnectionInfo(
++                    int statusCode, IBinder binder, ConnectionInfo info) throws RemoteException {
++                Parcel data = Parcel.obtain();
++                Parcel reply = Parcel.obtain();
++                try {
++                    data.writeInterfaceToken(DESCRIPTOR);
++                    data.writeInt(statusCode);
++                    data.writeStrongBinder(binder);
++                    if (info != null) {
++                        data.writeInt(1);
++                        info.writeToParcel(data, 0);
++                    } else {
++                        data.writeInt(0);
++                    }
++                    mRemote.transact(
++                            TRANSACTION_onPostInitCompleteWithConnectionInfo, data, reply, 0);
++                    reply.readException();
++                } finally {
++                    reply.recycle();
++                    data.recycle();
++                }
++            }
++        }
++    }
++}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java
+new file mode 100644
+index 0000000..6a4f6ef
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/IGmsServiceBroker.java
+@@ -0,0 +1,102 @@
++/*
++ * SPDX-FileCopyrightText: 2025 microG Project Team
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Hand-written in the style of AIDL-generated code from the interface
++ * definition of the same name in microG GmsCore (play-services-basement) so
++ * the trusted vault backend can perform the GMS broker handshake with
++ * microG without the Play services SDK. The interface descriptor and the
++ * transaction number of getService (45) are part of the protocol and must
++ * not change. Only getService is declared: it is the single broker method
++ * this client uses. The server-side Stub is never implemented by this
++ * client (the broker lives in the microG process), so it is kept abstract.
++ *
++ * This interface lives in org.chromium.components.trusted_vault.gms instead
++ * of com.google.android.gms.common.internal because the Play services
++ * basement jar already ships an IGmsServiceBroker (and Stub) under that
++ * name and R8 rejects the duplicate class at dex time. The real basement
++ * Stub cannot be used here: it has no asInterface method, so the broker
++ * binder cannot be wrapped with it. Only the Java package changed; the
++ * descriptor string and transaction number above are untouched.
++ */
++
++package org.chromium.components.trusted_vault.gms;
++
++import android.os.Binder;
++import android.os.IBinder;
++import android.os.IInterface;
++import android.os.Parcel;
++import android.os.RemoteException;
++
++public interface IGmsServiceBroker extends IInterface {
++    void getService(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException;
++
++    abstract class Stub extends Binder implements IGmsServiceBroker {
++        private static final String DESCRIPTOR =
++                "com.google.android.gms.common.internal.IGmsServiceBroker";
++
++        static final int TRANSACTION_getService = IBinder.FIRST_CALL_TRANSACTION + 45;
++
++        public Stub() {
++            attachInterface(this, DESCRIPTOR);
++        }
++
++        public static IGmsServiceBroker asInterface(IBinder binder) {
++            if (binder == null) {
++                return null;
++            }
++            IInterface local = binder.queryLocalInterface(DESCRIPTOR);
++            if (local instanceof IGmsServiceBroker) {
++                return (IGmsServiceBroker) local;
++            }
++            return new Proxy(binder);
++        }
++
++        @Override
++        public IBinder asBinder() {
++            return this;
++        }
++
++        @Override
++        public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
++                throws RemoteException {
++            // Client-side only: this process never hosts the broker.
++            return super.onTransact(code, data, reply, flags);
++        }
++
++        private static class Proxy implements IGmsServiceBroker {
++            private final IBinder mRemote;
++
++            Proxy(IBinder remote) {
++                mRemote = remote;
++            }
++
++            @Override
++            public IBinder asBinder() {
++                return mRemote;
++            }
++
++            @Override
++            public void getService(IGmsCallbacks callback, GetServiceRequest request)
++                    throws RemoteException {
++                Parcel data = Parcel.obtain();
++                Parcel reply = Parcel.obtain();
++                try {
++                    data.writeInterfaceToken(DESCRIPTOR);
++                    data.writeStrongBinder(callback != null ? callback.asBinder() : null);
++                    if (request != null) {
++                        data.writeInt(1);
++                        request.writeToParcel(data, 0);
++                    } else {
++                        data.writeInt(0);
++                    }
++                    mRemote.transact(TRANSACTION_getService, data, reply, 0);
++                    reply.readException();
++                } finally {
++                    reply.recycle();
++                    data.recycle();
++                }
++            }
++        }
++    }
++}
+diff --git a/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/Status.java b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/Status.java
+new file mode 100644
+index 0000000..62e7ed4
+--- /dev/null
++++ b/components/trusted_vault/android/java/src/org/chromium/components/trusted_vault/gms/Status.java
+@@ -0,0 +1,116 @@
++/*
++ * SPDX-FileCopyrightText: 2025 microG Project Team
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Hand-written from the SafeParcelable definition of the same name in microG
++ * GmsCore (play-services-basement) so the trusted vault backend can read the
++ * result of a Folsom service call without the Play services SDK. Field
++ * numbers and the wire format are part of the protocol and must not change:
++ * 1000 = version code (int), 1 = status code (int), 2 = status message
++ * (String), 3 = resolution (PendingIntent).
++ *
++ * This class lives in org.chromium.components.trusted_vault.gms instead of
++ * com.google.android.gms.common.api because the Play services basement jar
++ * already ships a Status under that name and R8 rejects the duplicate class
++ * at dex time. Only the Java package changed; the wire format above is
++ * untouched. The status is only ever read from a Parcel written by the
++ * service (microG), never written by this client, but writeToParcel mirrors
++ * the same layout for completeness.
++ */
++
++package org.chromium.components.trusted_vault.gms;
++
++import android.app.PendingIntent;
++import android.os.Parcel;
++import android.os.Parcelable;
++
++import org.chromium.components.trusted_vault.FolsomSafeParcel;
++
++/** The result of a GMS service call, as returned by the microG Folsom service. */
++public class Status implements Parcelable {
++    private int statusCode;
++    private String statusMessage;
++    private PendingIntent resolution;
++
++    public Status() {}
++
++    public Status(int statusCode, String statusMessage, PendingIntent resolution) {
++        this.statusCode = statusCode;
++        this.statusMessage = statusMessage;
++        this.resolution = resolution;
++    }
++
++    public int getStatusCode() {
++        return statusCode;
++    }
++
++    public String getStatusMessage() {
++        return statusMessage;
++    }
++
++    /** A pending intent that resolves the failure, or null when there is none. */
++    public PendingIntent getResolution() {
++        return resolution;
++    }
++
++    /** Returns true when a resolution intent is available. */
++    public boolean hasResolution() {
++        return resolution != null;
++    }
++
++    /** Returns true when the operation was successful (status code <= 0). */
++    public boolean isSuccess() {
++        return statusCode <= 0;
++    }
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    @Override
++    public void writeToParcel(Parcel dest, int flags) {
++        int start = FolsomSafeParcel.beginObject(dest);
++        FolsomSafeParcel.writeInt(dest, 1000, 1);
++        FolsomSafeParcel.writeInt(dest, 1, statusCode);
++        FolsomSafeParcel.writeString(dest, 2, statusMessage, false);
++        FolsomSafeParcel.writeParcelable(dest, 3, resolution, flags, false);
++        FolsomSafeParcel.finishObject(dest, start);
++    }
++
++    public static final Creator<Status> CREATOR =
++            new Creator<Status>() {
++                @Override
++                public Status createFromParcel(Parcel source) {
++                    int end = FolsomSafeParcel.readObjectEnd(source);
++                    Status result = new Status();
++                    while (source.dataPosition() < end) {
++                        int header = source.readInt();
++                        switch (FolsomSafeParcel.getFieldId(header)) {
++                            case 1:
++                                result.statusCode = FolsomSafeParcel.readInt(source, header);
++                                break;
++                            case 2:
++                                result.statusMessage =
++                                        FolsomSafeParcel.readString(source, header);
++                                break;
++                            case 3:
++                                result.resolution =
++                                        FolsomSafeParcel.readParcelable(
++                                                source, header, PendingIntent.CREATOR);
++                                break;
++                            default:
++                                FolsomSafeParcel.skip(source, header);
++                                break;
++                        }
++                    }
++                    source.setDataPosition(end);
++                    return result;
++                }
++
++                @Override
++                public Status[] newArray(int size) {
++                    return new Status[size];
++                }
++            };
++}
