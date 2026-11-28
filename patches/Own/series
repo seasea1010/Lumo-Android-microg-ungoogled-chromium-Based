@@ -19,3 +19,5 @@ fix-extension-remove-crash.patch
 enable-android-devtools.patch
 devtools-open-in-new-tab.patch
 extension-new-tab-override.patch
+bundle-devtools-ja-locale.patch
+localize-load-crx.patch

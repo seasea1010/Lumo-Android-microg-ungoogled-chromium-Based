@@ -1,0 +1,38 @@
+subject: Bundle the Japanese DevTools locale
+
+DevTools only ships the en-US and zh locales inside the bundled
+frontend. Every other locale, including ja, is fetched at runtime from
+the remote devtools://devtools/remote endpoint. The Android build
+blocks that endpoint (the built-in frontend is the only one that can
+load), so choosing Japanese in the DevTools settings always failed to
+load the ja locale data and DevTools silently fell back to en-US.
+
+Move ja from remote_devtools_locales to bundled_devtools_locales and
+add front_end/core/i18n/locales/ja.json to grd_files_bundled_sources,
+the same treatment zh already gets, so the Japanese locale data is
+packed into the build and DevTools loads it locally.
+---
+diff --git a/third_party/devtools-frontend/src/config/gni/i18n.gni b/third_party/devtools-frontend/src/config/gni/i18n.gni
+--- a/third_party/devtools-frontend/src/config/gni/i18n.gni
++++ b/third_party/devtools-frontend/src/config/gni/i18n.gni
+@@ -42,5 +42,4 @@
+   "is",
+   "it",
+-  "ja",
+   "ka",
+   "kk",
+@@ -91,4 +90,5 @@
+ bundled_devtools_locales = [
+   "en-US",
++  "ja",
+   "zh",
+ ]
+diff --git a/third_party/devtools-frontend/src/config/gni/devtools_grd_files.gni b/third_party/devtools-frontend/src/config/gni/devtools_grd_files.gni
+--- a/third_party/devtools-frontend/src/config/gni/devtools_grd_files.gni
++++ b/third_party/devtools-frontend/src/config/gni/devtools_grd_files.gni
+@@ -331,4 +331,5 @@
+   "front_end/core/i18n/i18n.js",
+   "front_end/core/i18n/locales/en-US.json",
++  "front_end/core/i18n/locales/ja.json",
+   "front_end/core/i18n/locales/zh.json",
+   "front_end/core/platform/api/api.js",

@@ -1,0 +1,110 @@
+subject: Localize the Load CRX flow on chrome://extensions
+
+The "load .crx" button added by the Ultimatum load-crx patch used a
+hard-coded English label, and the file picker title and the three
+error messages in DeveloperPrivateLoadCRXFunction were hard-coded
+English literals, so all of them stayed in English whatever the UI
+locale was.
+
+Give the button a real string resource (IDS_EXTENSIONS_TOOLBAR_LOAD_CRX,
+wired through extensions_ui.cc as $i18n{toolbarLoadCrx}), localize the
+file picker title and the error messages the same way, and add Japanese
+translations for all five strings to generated_resources_ja.xtb. The
+translation IDs are the grit MD5 fingerprints of the English source
+strings, as computed by tools/grit/grit/extern/FP.py. Two error
+messages were reworded slightly ("Child accounts cannot load .crx
+extensions." and "Extension installation has been blocked by policy.")
+and the picker title was title-cased ("Install from .crx"); the
+Japanese texts are:
+
+  Load CRX                                            CRX を読み込む
+  Install from .crx                                   .crx からインストール
+  Child accounts cannot load .crx extensions.         子供用アカウントでは .crx 拡張機能を読み込めません
+  Must be in developer mode to load .crx extensions.  .crx 拡張機能を読み込むには開発者モードが必要です
+  Extension installation has been blocked by policy.  拡張機能のインストールはポリシーによってブロックされています
+---
+diff --git a/chrome/app/extensions_strings.grdp b/chrome/app/extensions_strings.grdp
+--- a/chrome/app/extensions_strings.grdp
++++ b/chrome/app/extensions_strings.grdp
+@@ -576,6 +576,21 @@
+   <message name="IDS_EXTENSIONS_TOOLBAR_LOAD_UNPACKED" desc="The text displayed in the toolbar to load an unpacked extension.">
+     Load unpacked
+   </message>
++  <message name="IDS_EXTENSIONS_TOOLBAR_LOAD_CRX" desc="The text displayed in the toolbar to load a .crx extension file.">
++    Load CRX
++  </message>
++  <message name="IDS_EXTENSIONS_LOAD_CRX_DIALOG_TITLE" desc="The title of the file picker dialog shown to load a .crx extension file.">
++    Install from .crx
++  </message>
++  <message name="IDS_EXTENSIONS_LOAD_CRX_ERROR_CHILD_ACCOUNT" desc="Error shown when a child account user tries to load a .crx extension.">
++    Child accounts cannot load .crx extensions.
++  </message>
++  <message name="IDS_EXTENSIONS_LOAD_CRX_ERROR_DEVELOPER_MODE" desc="Error shown when loading a .crx extension without developer mode enabled.">
++    Must be in developer mode to load .crx extensions.
++  </message>
++  <message name="IDS_EXTENSIONS_LOAD_CRX_ERROR_BLOCKED_BY_POLICY" desc="Error shown when extension installation is blocked by policy.">
++    Extension installation has been blocked by policy.
++  </message>
+   <message name="IDS_EXTENSIONS_TOOLBAR_LOAD_UNPACKED_DONE" desc="Text displayed in a toast popup message when extension has been loaded.">
+     Extension loaded
+   </message>
+diff --git a/chrome/app/resources/generated_resources_ja.xtb b/chrome/app/resources/generated_resources_ja.xtb
+--- a/chrome/app/resources/generated_resources_ja.xtb
++++ b/chrome/app/resources/generated_resources_ja.xtb
+@@ -10802,1 +10802,6 @@
++<translation id="8204108596543213128">CRX を読み込む</translation>
++<translation id="2688178167591227374">.crx からインストール</translation>
++<translation id="164581754783034215">子供用アカウントでは .crx 拡張機能を読み込めません</translation>
++<translation id="5135573416619047014">.crx 拡張機能を読み込むには開発者モードが必要です</translation>
++<translation id="243810125133626480">拡張機能のインストールはポリシーによってブロックされています</translation>
+ </translationbundle>
+diff --git a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+--- a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
++++ b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+@@ -1071,12 +1071,15 @@
+   Profile* profile = Profile::FromBrowserContext(browser_context());
+   if (profile && supervised_user::AreExtensionsPermissionsEnabled(profile)) {
+-    return RespondNow(Error("Child account users cannot load .crx extensions."));
++    return RespondNow(Error(
++        l10n_util::GetStringUTF8(IDS_EXTENSIONS_LOAD_CRX_ERROR_CHILD_ACCOUNT)));
+   }
+   if (!profile->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode)) {
+     return RespondNow(
+-        Error("Must be in developer mode to load .crx extensions."));
++        Error(l10n_util::GetStringUTF8(
++            IDS_EXTENSIONS_LOAD_CRX_ERROR_DEVELOPER_MODE)));
+   }
+   if (ExtensionManagementFactory::GetForBrowserContext(browser_context())
+           ->BlocklistedByDefault()) {
+-    return RespondNow(Error("Extension installation is blocked by policy."));
++    return RespondNow(Error(l10n_util::GetStringUTF8(
++        IDS_EXTENSIONS_LOAD_CRX_ERROR_BLOCKED_BY_POLICY)));
+   }
+@@ -1096,4 +1099,5 @@
+   select_file_dialog_->SelectFile(
+-      ui::SelectFileDialog::SELECT_OPEN_FILE, u"install from .crx",
++      ui::SelectFileDialog::SELECT_OPEN_FILE,
++      l10n_util::GetStringUTF16(IDS_EXTENSIONS_LOAD_CRX_DIALOG_TITLE),
+       last_directory, &file_type_info, 0, base::FilePath::StringType(),
+       platform_util::GetTopLevel(web_contents->GetNativeView()));
+diff --git a/chrome/browser/resources/extensions/toolbar.html.ts b/chrome/browser/resources/extensions/toolbar.html.ts
+--- a/chrome/browser/resources/extensions/toolbar.html.ts
++++ b/chrome/browser/resources/extensions/toolbar.html.ts
+@@ -37,7 +37,7 @@
+     <if expr="is_android">
+       <cr-button ?hidden="${!this.canLoadUnpacked_()}" id="loadCRX"
+           @click="${this.onLoadCRXClick_}">
+-        load .crx
++        $i18n{toolbarLoadCrx}
+       </cr-button>
+     </if>
+     <cr-button ?hidden="${!this.canLoadUnpacked_()}" id="loadUnpacked"
+diff --git a/chrome/browser/ui/webui/extensions/extensions_ui.cc b/chrome/browser/ui/webui/extensions/extensions_ui.cc
+--- a/chrome/browser/ui/webui/extensions/extensions_ui.cc
++++ b/chrome/browser/ui/webui/extensions/extensions_ui.cc
+@@ -401,4 +401,5 @@
+       {"toolbarDevMode", IDS_EXTENSIONS_DEVELOPER_MODE},
++      {"toolbarLoadCrx", IDS_EXTENSIONS_TOOLBAR_LOAD_CRX},
+       {"toolbarLoadUnpacked", IDS_EXTENSIONS_TOOLBAR_LOAD_UNPACKED},
+       {"toolbarLoadUnpackedDone", IDS_EXTENSIONS_TOOLBAR_LOAD_UNPACKED_DONE},
+       {"toolbarPack", IDS_EXTENSIONS_TOOLBAR_PACK},
